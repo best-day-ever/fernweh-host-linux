@@ -47,6 +47,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "nvenc/idr_scheduler.h"
 #include "nvenc/nvenc_encoder.h"
 #include "nvenc/nvenc_limits.h"
 #include "plank_arrangement_json.h"
@@ -742,26 +743,14 @@ namespace video {
      * @brief Mark the frame as a request for an IDR frame.
      */
     void request_idr_frame() override {
-#ifndef _WIN32
-      constexpr auto min_idr_interval = std::chrono::milliseconds {1000};
-      const auto now = std::chrono::steady_clock::now();
-      if (last_idr_request_time.time_since_epoch().count() != 0 &&
-          now - last_idr_request_time < min_idr_interval) {
-        BOOST_LOG(debug) << "NvEnc: rate-limiting repeated IDR request"sv;
-        return;
-      }
-#endif
-      force_idr = true;
-#ifndef _WIN32
-      last_idr_request_time = now;
-#endif
+      refresh.request();
     }
 
     /**
      * @brief Mark the frame as a request for a normal inter frame.
      */
     void request_normal_frame() override {
-      force_idr = false;
+      // A normal frame must not cancel a refresh waiting for its deadline.
     }
 
     /**
@@ -791,17 +780,13 @@ namespace video {
         return {};
       }
 
-      auto result = device->nvenc->encode_frame(frame_index, force_idr);
-      force_idr = false;
-      return result;
+      const bool force_idr = refresh.take_request(std::chrono::steady_clock::now());
+      return device->nvenc->encode_frame(frame_index, force_idr);
     }
 
   private:
     std::unique_ptr<platf::nvenc_encode_device_t> device;
-    bool force_idr = false;
-#ifndef _WIN32
-    std::chrono::steady_clock::time_point last_idr_request_time;
-#endif
+    nvenc::idr_scheduler refresh;
   };
 
   /**
