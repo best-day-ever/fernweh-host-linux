@@ -1,3 +1,14 @@
+# Fernweh Linux Host development
+
+Read the parent `AGENTS.md` and `docs/fernweh/development.md` first when working
+inside the Fernweh superproject. The parent owns transport, packaging and broker
+contracts; this component owns Linux Host source. For standalone clones use
+https://github.com/best-day-ever/fernweh/blob/main/docs/fernweh/development.md.
+Rocky9.7/NVIDIA/X11 is the fork baseline. Keep this review private and preserve
+upstream history, licensing, OS authorization and exact-format media behavior.
+The inherited Sunshine contributor guidance below applies to relevant code;
+its references to other build targets are not Fernweh platform support claims.
+
 On Windows we use msys2 and ucrt64 to compile.
 You need to prefix commands with `C:\msys64\msys2_shell.cmd -defterm -here -no-start -ucrt64 -c`.
 
