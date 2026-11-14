@@ -3,7 +3,8 @@
 The Linux Host component of [BDE Fernweh](https://github.com/best-day-ever/fernweh),
 a downstream source fork of [PLANK Host](https://github.com/instinctual/plank-host-linux),
 which is derived from [Sunshine](https://github.com/LizardByte/Sunshine).
-This repository stays private during review. No new binary release is provided.
+This is public ALPHA source. No new binary release is provided.
+The parent [publication receipt](https://github.com/best-day-ever/fernweh/blob/main/docs/fernweh/review.md) records the history audit.
 
 Build from the parent Fernweh gitlink and its exact transport/dependency patches.
 The fork's baseline is Rocky 9.7 x86-64, NVIDIA graphics and X11; other inherited
