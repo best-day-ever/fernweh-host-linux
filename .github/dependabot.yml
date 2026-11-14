@@ -11,7 +11,6 @@ updates:
     allow:
       - dependency-name: third-party/build-deps
       - dependency-name: third-party/glad
-      - dependency-name: third-party/googletest
       - dependency-name: third-party/libdisplaydevice
       - dependency-name: third-party/lizardbyte-common
       - dependency-name: third-party/Simple-Web-Server
