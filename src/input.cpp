@@ -1582,6 +1582,9 @@ namespace input {
             plank_transport_input_read_u32(payload + 28) != 0) {
           return false;
         }
+        for (std::size_t offset = 8; offset <= 24; offset += sizeof(float)) {
+          if (!std::isfinite(plank_transport_input_read_float(payload + offset))) return false;
+        }
         SS_PEN_PACKET packet {};
         packet.eventType = payload[0];
         packet.toolType = payload[1];
