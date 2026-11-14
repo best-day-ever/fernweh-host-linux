@@ -12,12 +12,13 @@
 // local includes
 #include "src/platform/common.h"
 #include "src/utility.h"
+#include "x11_rgb10.h"
 
 // X11 Display
 extern "C" struct _XDisplay;
 
-namespace egl {
-  class cursor_t;
+namespace platf {
+  class cursor_image_t;
 }
 
 namespace platf::x11 {
@@ -30,24 +31,6 @@ namespace platf::x11 {
     int desktop_width;  ///< Current root-window width.
     int desktop_height;  ///< Current root-window height.
   };
-
-  /**
-   * @brief Unpack one depth-30 X11 RGB row into FFmpeg identity-GBR planes.
-   *
-   * The qualified visual stores red in bits 0-9, green in bits 10-19, and
-   * blue in bits 20-29. FFmpeg's identity matrix consumes planes as G, B, R.
-   *
-   * @param source Packed X11 pixels.
-   * @param green FFmpeg plane 0 destination.
-   * @param blue FFmpeg plane 1 destination.
-   * @param red FFmpeg plane 2 destination.
-   * @param pixel_count Number of pixels in the row.
-   */
-  void unpack_xrgb10_to_gbr10_row(const std::uint32_t *source,
-                                  std::uint16_t *green,
-                                  std::uint16_t *blue,
-                                  std::uint16_t *red,
-                                  std::size_t pixel_count);
 
   /**
    * @brief Scale packed depth-30 X11 RGB directly into planar identity GBR.
@@ -69,18 +52,7 @@ namespace platf::x11 {
    * @param destination_width Destination width in pixels.
    * @param destination_height Destination height in pixels.
    */
-  void scale_xrgb10_to_gbr10(const std::uint8_t *source,
-                             std::size_t source_pitch,
-                             int source_width,
-                             int source_height,
-                             std::uint16_t *green,
-                             std::size_t green_pitch,
-                             std::uint16_t *blue,
-                             std::size_t blue_pitch,
-                             std::uint16_t *red,
-                             std::size_t red_pitch,
-                             int destination_width,
-                             int destination_height);
+  void scale_xrgb10_to_gbr10(const std::uint8_t *source, std::size_t source_pitch, int source_width, int source_height, std::uint16_t *green, std::size_t green_pitch, std::uint16_t *blue, std::size_t blue_pitch, std::uint16_t *red, std::size_t red_pitch, int destination_width, int destination_height);
 
   struct cursor_ctx_raw_t;
   /**
@@ -122,7 +94,7 @@ namespace platf::x11 {
      *
      * @param img Image or frame object to read from or populate.
      */
-    bool capture(egl::cursor_t &img);
+    bool capture(platf::cursor_image_t &img);
 
     /**
      * @brief Subscribe this connection to XFixes cursor-shape changes.
@@ -148,17 +120,6 @@ namespace platf::x11 {
      *         were pending, or -1 before shape monitoring is initialized.
      */
     int consume_shape_change();
-
-    /**
-     * Capture and blend the cursor into the image
-     *
-     * img <-- destination image
-     * offsetX, offsetY <--- Top left corner of the virtual screen
-     * @param img Image or frame object to read from or populate.
-     * @param offsetX Offset x.
-     * @param offsetY Offset y.
-     */
-    void blend(img_t &img, int offsetX, int offsetY);
 
     cursor_ctx_t ctx;  ///< X11 cursor context used to track and blend cursor images.
 

@@ -17,6 +17,7 @@
   #include "src/video_colorspace.h"
 
 namespace platf {
+  class deinit_t;
   struct avcodec_encode_device_t;
   struct nvenc_encode_device_t;
   struct img_t;
@@ -25,11 +26,23 @@ namespace platf {
 
 namespace cuda {
 
+  /**
+   * @brief Pin an existing SHM allocation for uploads, once for its lifetime.
+   *
+   * The returned owner must be destroyed before unmapping the allocation, and
+   * only after every GPU upload has completed. Uses portable registration so
+   * capture and encode threads may use different CUDA contexts. The process-wide
+   * registration budget is bounded; failure leaves the ordinary upload path.
+   * @param data Page-aligned shared-memory mapping.
+   * @param size Mapping's captured image size, in bytes.
+   * @return Registration owner, or null if registration is unavailable.
+   */
+  std::unique_ptr<platf::deinit_t> register_host_memory(void *data, std::size_t size);
+
   namespace nvfbc {
     std::vector<std::string> display_names();
   }
 
-  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, bool vram);
   /**
    * @brief Create an NvFBC CUDA-to-CPU encode device for x264.
    *
@@ -42,24 +55,6 @@ namespace cuda {
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_native10_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
 
-  /**
-   * @brief Create a GL->CUDA encoding device for consuming captured dmabufs.
-   * @param in_width Width of captured frames.
-   * @param in_height Height of captured frames.
-   * @param offset_x Offset of content in captured frame.
-   * @param offset_y Offset of content in captured frame.
-   * @return FFmpeg encoding device context.
-   */
-  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
-
-  int init();
-
-  #if defined(SUNSHINE_TESTS)
-  bool test_identity_gbr_8bit_conversion();
-  bool test_identity_gbr_10bit_conversion();
-  bool test_bt709_limited_nv12_conversion();
-  bool test_bt709_limited_p010_conversion();
-  #endif
 }  // namespace cuda
 
 typedef struct cudaArray *cudaArray_t;
@@ -89,17 +84,7 @@ namespace cuda {
 
   stream_t make_stream(int flags = 0);
 
-  int scale_xrgb10_to_yuv444_10bit(std::uintptr_t source,
-                                   std::uint32_t source_pitch,
-                                   int source_width,
-                                   int source_height,
-                                   std::uint8_t *Y,
-                                   std::uint8_t *U,
-                                   std::uint8_t *V,
-                                   std::uint32_t destination_pitch,
-                                   int destination_width,
-                                   int destination_height,
-                                   stream_t::pointer stream);
+  int scale_xrgb10_to_yuv444_10bit(std::uintptr_t source, std::uint32_t source_pitch, int source_width, int source_height, std::uint8_t *Y, std::uint8_t *U, std::uint8_t *V, std::uint32_t destination_pitch, int destination_width, int destination_height, stream_t::pointer stream);
 
   struct viewport_t {
     int width;
@@ -120,19 +105,6 @@ namespace cuda {
     ~tex_t();
 
     int copy(std::uint8_t *src, int height, int pitch);
-
-    /**
-     * Copy one rectangle of a larger BGRA frame into the texture (packed
-     * capture). Offsets and sizes are in pixels; `src_pitch` is in bytes.
-     */
-    int copy_rect(const std::uint8_t *src, int src_pitch, int src_x, int src_y, int width, int height,
-                  int dst_x, int dst_y);
-
-    /** Fill the whole texture with transparent black (packed capture gaps). */
-    int clear(int height, int pitch);
-
-    /** Read the texture back to host memory (capture probe). */
-    int download(std::uint8_t *dst, int height, int pitch);
 
     cudaArray_t array;
 
@@ -212,7 +184,9 @@ namespace cuda {
     int resize(cudaTextureObject_t source, stream_t::pointer stream);
 
     /** @brief Return the point-sampled float texture for scale-1 conversion. */
-    cudaTextureObject_t texture() const { return texture_; }
+    cudaTextureObject_t texture() const {
+      return texture_;
+    }
 
   private:
     area_scaler_t() = default;

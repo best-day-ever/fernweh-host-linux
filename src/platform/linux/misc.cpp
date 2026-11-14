@@ -53,14 +53,12 @@
 #endif
 
 // local includes
-#include "graphics.h"
 #include "misc.h"
 #include "src/config.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/video.h"
-#include "vaapi.h"
 
 #ifdef __GNUC__
   #define SUNSHINE_GNUC_EXTENSION __extension__
@@ -238,86 +236,6 @@ namespace platf {
     getifaddrs(&p);
 
     return ifaddr_t {p};
-  }
-
-  /**
-   * @brief Performs migration if necessary, then returns the appdata directory.
-   * @details This is used for the log directory, so it cannot invoke Boost logging!
-   * @return The path of the appdata directory that should be used.
-   */
-  fs::path appdata() {
-    static std::once_flag migration_flag;
-    static fs::path config_path;
-
-    // Ensure migration is only attempted once
-    std::call_once(migration_flag, []() {
-      bool found = false;
-      bool migrate_config = true;
-      fs::path homedir {lizardbyte::common::get_env("HOME")};
-
-      // Get the home directory
-      if (homedir.empty()) {
-        // If HOME is empty or not set, use the current user's home directory
-        homedir = getpwuid(geteuid())->pw_dir;
-      }
-
-      // May be set if running under a systemd service with the ConfigurationDirectory= option set.
-      if (std::string dir; lizardbyte::common::get_env("CONFIGURATION_DIRECTORY", dir) && !dir.empty()) {
-        found = true;
-        config_path = fs::path(dir) / "sunshine"sv;
-      }
-      // Otherwise, follow the XDG base directory specification:
-      // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
-      if (std::string dir; !found && lizardbyte::common::get_env("XDG_CONFIG_HOME", dir) && !dir.empty()) {
-        found = true;
-        config_path = fs::path(dir) / "sunshine"sv;
-      }
-      // As a last resort, use the home directory
-      if (!found) {
-        migrate_config = false;
-        config_path = homedir / ".config" / "sunshine";
-      }
-
-      // migrate from the old config location if necessary
-      if (std::string migrate_envvar; migrate_config && found && lizardbyte::common::get_env("SUNSHINE_MIGRATE_CONFIG", migrate_envvar) && migrate_envvar == "1") {
-        std::error_code ec;
-        fs::path old_config_path = homedir / ".config" / "sunshine";
-        if (old_config_path != config_path && fs::exists(old_config_path, ec)) {
-          if (!fs::exists(config_path, ec)) {
-            std::cout << "Migrating config from "sv << old_config_path << " to "sv << config_path << std::endl;
-            if (!ec) {
-              // Create the new directory tree if it doesn't already exist
-              fs::create_directories(config_path, ec);
-            }
-            if (!ec) {
-              // Copy the old directory into the new location
-              // NB: We use a copy instead of a move so that cross-volume migrations work
-              fs::copy(old_config_path, config_path, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
-            }
-            if (!ec) {
-              // If the copy was successful, delete the original directory
-              fs::remove_all(old_config_path, ec);
-              if (ec) {
-                std::cerr << "Failed to clean up old config directory: " << ec.message() << std::endl;
-
-                // This is not fatal. Next time we start, we'll warn the user to delete the old one.
-                ec.clear();
-              }
-            }
-            if (ec) {
-              std::cerr << "Migration failed: " << ec.message() << std::endl;
-              config_path = old_config_path;
-            }
-          } else {
-            // We cannot use Boost logging because it hasn't been initialized yet!
-            std::cerr << "Config exists in both "sv << old_config_path << " and "sv << config_path << ". Using "sv << config_path << " for config" << std::endl;
-            std::cerr << "It is recommended to remove "sv << old_config_path << std::endl;
-          }
-        }
-      }
-    });
-
-    return config_path;
   }
 
   /**
@@ -1005,20 +923,8 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_CUDA
       NVFBC,  ///< NvFBC
 #endif
-#ifdef SUNSHINE_BUILD_WAYLAND
-      WAYLAND,  ///< Wayland
-#endif
-#ifdef SUNSHINE_BUILD_DRM
-      KMS,  ///< KMS
-#endif
 #ifdef SUNSHINE_BUILD_X11
       X11,  ///< X11
-#endif
-#ifdef SUNSHINE_BUILD_KWIN
-      KWIN,  ///< KWin ScreenCast
-#endif
-#ifdef SUNSHINE_BUILD_PORTAL
-      PORTAL,  ///< XDG PORTAL
 #endif
       MAX_FLAGS  ///< The maximum number of flags
     };
@@ -1049,42 +955,6 @@ namespace platf {
   }
 #endif
 
-#ifdef SUNSHINE_BUILD_WAYLAND
-  /**
-   * @brief Enumerate displays available through the Wayland capture backend.
-   *
-   * @return Wayland display names, or an empty list when discovery fails.
-   */
-  std::vector<std::string> wl_display_names();
-  /**
-   * @brief Create a Wayland display capture backend.
-   *
-   * @param hwdevice_type Hardware device type requested for capture or encode.
-   * @param display_name Display name.
-   * @param config Configuration values to apply.
-   * @return Display backend, or nullptr when Wayland capture initialization fails.
-   */
-  std::shared_ptr<display_t> wl_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
-
-  /**
-   * @brief Check whether Wayland capture is available for the current session.
-   *
-   * @return True when the active window system is Wayland and at least one output is discoverable.
-   */
-  bool verify_wl() {
-    return window_system == window_system_e::WAYLAND && !wl_display_names().empty();
-  }
-#endif
-
-#ifdef SUNSHINE_BUILD_DRM
-  std::vector<std::string> kms_display_names(mem_type_e hwdevice_type);
-  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
-
-  bool verify_kms() {
-    return !kms_display_names(mem_type_e::unknown).empty();
-  }
-#endif
-
 #ifdef SUNSHINE_BUILD_X11
   std::vector<std::string> x11_display_names();
   std::vector<display_info_t> x11_display_infos();
@@ -1092,26 +962,6 @@ namespace platf {
 
   bool verify_x11() {
     return window_system == window_system_e::X11 && !x11_display_names().empty();
-  }
-#endif
-
-#ifdef SUNSHINE_BUILD_PORTAL
-  std::vector<std::string> portal_display_names();
-  std::shared_ptr<display_t> portal_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
-
-  bool verify_portal() {
-    return !portal_display_names().empty();
-  }
-#endif
-
-#ifdef SUNSHINE_BUILD_KWIN
-  bool kwin_available();
-  std::vector<std::string> kwin_display_names();
-  std::shared_ptr<display_t> kwin_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
-
-  bool verify_kwin() {
-    // Note: The separate kwin_available check is necessary because with CAP_SYS_ADMIN kwin_display_names is never empty during startup
-    return window_system == window_system_e::WAYLAND && kwin_available() && !kwin_display_names().empty();
   }
 #endif
 
@@ -1125,29 +975,9 @@ namespace platf {
       return nvfbc_display_names();
     }
 #endif
-#ifdef SUNSHINE_BUILD_WAYLAND
-    if (sources[source::WAYLAND]) {
-      return wl_display_names();
-    }
-#endif
-#ifdef SUNSHINE_BUILD_DRM
-    if (sources[source::KMS]) {
-      return kms_display_names(hwdevice_type);
-    }
-#endif
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
       return x11_display_names();
-    }
-#endif
-#ifdef SUNSHINE_BUILD_PORTAL
-    if (sources[source::PORTAL]) {
-      return portal_display_names();
-    }
-#endif
-#ifdef SUNSHINE_BUILD_KWIN
-    if (sources[source::KWIN]) {
-      return kwin_display_names();
     }
 #endif
     return {};
@@ -1214,44 +1044,6 @@ namespace platf {
       return nullptr;
     }
 
-    // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
-#ifdef SUNSHINE_BUILD_DRM
-    if (sources[source::KMS]) {
-      BOOST_LOG(info) << "Screencasting with KMS"sv;
-      return kms_display(hwdevice_type, display_name, config);
-    }
-#endif
-
-    // KMS capture was passed; drop CAP_SYS_ADMIN only.
-    if (has_elevated_privileges(false)) {
-      drop_elevated_privileges(false);
-    }
-
-#ifdef SUNSHINE_BUILD_CUDA
-    if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
-      BOOST_LOG(info) << "Screencasting with NvFBC"sv;
-      return nvfbc_display(hwdevice_type, display_name, config);
-    }
-#endif
-#ifdef SUNSHINE_BUILD_WAYLAND
-    if (sources[source::WAYLAND]) {
-      BOOST_LOG(info) << "Screencasting with Wayland's protocol"sv;
-      return wl_display(hwdevice_type, display_name, config);
-    }
-#endif
-#ifdef SUNSHINE_BUILD_PORTAL
-    if (sources[source::PORTAL]) {
-      BOOST_LOG(info) << "Screencasting with XDG portal"sv;
-      return portal_display(hwdevice_type, display_name, config);
-    }
-#endif
-#ifdef SUNSHINE_BUILD_KWIN
-    if (sources[source::KWIN]) {
-      BOOST_LOG(info) << "Screencasting with KWin ScreenCast"sv;
-      return kwin_display(hwdevice_type, display_name, config);
-    }
-#endif
-
     return nullptr;
   }
 
@@ -1259,26 +1051,9 @@ namespace platf {
    * @brief Initialize the Linux high-precision timer file descriptor.
    */
   std::unique_ptr<deinit_t> init() {
-    // enable low latency mode for AMD
-    // https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/30039
-    lizardbyte::common::set_env("AMD_DEBUG", "lowlatencyenc");
-
-    // enable Vulkan video extensions for AMD RADV
-    lizardbyte::common::set_env("RADV_PERFTEST", "video_encode");
-    // Above is deprecated on Mesa 26.1+ and replaced by (keep both to ensure best compatibility):
-    lizardbyte::common::append_env("RADV_EXPERIMENTAL", "video_encode", ",");
-
-    // These are allowed to fail.
-    gbm::init();
-
     window_system = window_system_e::NONE;
-#ifdef SUNSHINE_BUILD_WAYLAND
-    if (std::string v; lizardbyte::common::get_env("WAYLAND_DISPLAY", v)) {
-      window_system = window_system_e::WAYLAND;
-    }
-#endif
 #if defined(SUNSHINE_BUILD_X11) || defined(SUNSHINE_BUILD_CUDA)
-    if (std::string v; lizardbyte::common::get_env("DISPLAY", v) && window_system != window_system_e::WAYLAND) {
+    if (std::string v; lizardbyte::common::get_env("DISPLAY", v)) {
       if (lizardbyte::common::get_env("WAYLAND_DISPLAY", v)) {
         BOOST_LOG(warning) << "Wayland detected, yet sunshine will use X11 for screencasting, screencasting will only work on XWayland applications"sv;
       }
@@ -1294,16 +1069,6 @@ namespace platf {
       sources[source::NVFBC] = true;
     }
 #endif
-#ifdef SUNSHINE_BUILD_WAYLAND
-    if (sources.none() && verify_wl()) {
-      sources[source::WAYLAND] = true;
-    }
-#endif
-#ifdef SUNSHINE_BUILD_DRM
-    if (sources.none() && verify_kms()) {
-      sources[source::KMS] = true;
-    }
-#endif
 #ifdef SUNSHINE_BUILD_X11
     // Native X11/XShm is an independent per-bookmark source and may also be
     // needed as a software-encoder fallback. Always discover it on X11.
@@ -1311,24 +1076,9 @@ namespace platf {
       sources[source::X11] = true;
     }
 #endif
-#ifdef SUNSHINE_BUILD_PORTAL
-    if (verify_portal()) {
-      sources[source::PORTAL] = true;
-    }
-#endif
-#ifdef SUNSHINE_BUILD_KWIN
-    if (sources.none() && verify_kwin()) {
-      sources[source::KWIN] = true;
-    }
-#endif
 
     if (sources.none()) {
       BOOST_LOG(error) << "Unable to initialize capture method"sv;
-      return nullptr;
-    }
-
-    if (!gladLoaderLoadEGL(NULL)) {
-      BOOST_LOG(error) << "Failed to load EGL library symbols"sv;
       return nullptr;
     }
 

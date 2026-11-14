@@ -54,147 +54,13 @@ namespace config {
     struct {
       std::string sw_preset;
       std::string sw_tune;
-      std::optional<int> svtav1_preset;
       int vbv_maxrate_percentage;  ///< Peak software-encoder rate as a percentage of the requested average rate.
       int vbv_buffer_frames;  ///< Software-encoder VBV reservoir in average-rate frame units; zero keeps legacy sizing.
       int scenecut;  ///< x264 scene-change threshold; zero disables adaptive keyframes.
     } sw;  ///< Software encoder options.
 
     nvenc::nvenc_config nv;  ///< NVIDIA NVENC encoder settings.
-    bool nv_realtime_hags;  ///< Enable the NVIDIA realtime HAGS workaround.
-    bool nv_opengl_vulkan_on_dxgi;  ///< Prefer NVIDIA OpenGL/Vulkan-on-DXGI interop.
-    bool nv_sunshine_high_power_mode;  ///< Request NVIDIA high-power mode for Sunshine.
-
-    struct {
-      int preset;
-      int multipass;
-      int h264_coder;
-      int aq;
-      int vbv_percentage_increase;
-    } nv_legacy;  ///< Legacy NVIDIA encoder options kept for config compatibility.
-
-    struct {
-      std::optional<int> qsv_preset;
-      std::optional<int> qsv_cavlc;
-      bool qsv_slow_hevc;
-    } qsv;  ///< Intel Quick Sync encoder options.
-
-    struct {
-      std::optional<int> amd_usage_h264;
-      std::optional<int> amd_usage_hevc;
-      std::optional<int> amd_usage_av1;
-      std::optional<int> amd_rc_h264;
-      std::optional<int> amd_rc_hevc;
-      std::optional<int> amd_rc_av1;
-      std::optional<int> amd_enforce_hrd;
-      std::optional<int> amd_quality_h264;
-      std::optional<int> amd_quality_hevc;
-      std::optional<int> amd_quality_av1;
-      std::optional<int> amd_preanalysis;
-      std::optional<int> amd_vbaq;
-      int amd_coder;
-    } amd;  ///< AMD AMF encoder options.
-
-    struct {
-      int vt_allow_sw;
-      int vt_require_sw;
-      int vt_realtime;
-      int vt_coder;
-    } vt;  ///< VideoToolbox encoder options.
-
-    struct {
-      std::optional<int> blbrc;
-      std::optional<int> vaapi_quality;
-      std::optional<int> vaapi_rc;
-      std::string vaapi_rc_str;
-      bool strict_rc_buffer;
-    } vaapi;  ///< VA-API encoder options.
-
-    struct {
-      int tune;  // 0=default, 1=hq, 2=ll, 3=ull, 4=lossless
-      int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
-    } vk;  ///< Vulkan encoder options.
-
-    std::string adapter_name;  ///< Display adapter name selected in configuration.
-
-    /**
-     * @brief Display-device integration settings.
-     */
-    struct dd_t {
-      /**
-       * @brief Compatibility workarounds for display-device control.
-       */
-      struct workarounds_t {
-        std::chrono::milliseconds hdr_toggle_delay;  ///< Specify whether to apply HDR high-contrast color workaround and what delay to use.
-      };
-
-      /**
-       * @brief Selects how Sunshine prepares the active display before streaming.
-       */
-      enum class config_option_e {
-        disabled,  ///< Disable the configuration for the device.
-        verify_only,  ///< @seealso{display_device::SingleDisplayConfiguration::DevicePreparation}
-        ensure_active,  ///< @seealso{display_device::SingleDisplayConfiguration::DevicePreparation}
-        ensure_primary,  ///< @seealso{display_device::SingleDisplayConfiguration::DevicePreparation}
-        ensure_only_display  ///< @seealso{display_device::SingleDisplayConfiguration::DevicePreparation}
-      };
-
-      /**
-       * @brief Selects how Sunshine chooses the stream display resolution.
-       */
-      enum class resolution_option_e {
-        disabled,  ///< Do not change resolution.
-        automatic,  ///< Change resolution and use the one received from Moonlight.
-        manual  ///< Change resolution and use the manually provided one.
-      };
-
-      /**
-       * @brief Selects how Sunshine chooses the stream display refresh rate.
-       */
-      enum class refresh_rate_option_e {
-        disabled,  ///< Do not change refresh rate.
-        automatic,  ///< Change refresh rate and use the one received from Moonlight.
-        manual  ///< Change refresh rate and use the manually provided one.
-      };
-
-      /**
-       * @brief Selects how Sunshine handles HDR state for the stream display.
-       */
-      enum class hdr_option_e {
-        disabled,  ///< Do not change HDR settings.
-        automatic  ///< Change HDR settings and use the state requested by Moonlight.
-      };
-
-      /**
-       * @brief Single display mode remapping rule from configuration.
-       */
-      struct mode_remapping_entry_t {
-        std::string requested_resolution;  ///< Resolution string requested by the client.
-        std::string requested_fps;  ///< Refresh-rate string requested by the client.
-        std::string final_resolution;  ///< Resolution string to apply after remapping.
-        std::string final_refresh_rate;  ///< Refresh-rate string to apply after remapping.
-      };
-
-      /**
-       * @brief Collection of display mode remapping rules.
-       */
-      struct mode_remapping_t {
-        std::vector<mode_remapping_entry_t> mixed;  ///< To be used when `resolution_option` and `refresh_rate_option` is set to `automatic`.
-        std::vector<mode_remapping_entry_t> resolution_only;  ///< To be use when only `resolution_option` is set to `automatic`.
-        std::vector<mode_remapping_entry_t> refresh_rate_only;  ///< To be use when only `refresh_rate_option` is set to `automatic`.
-      };
-
-      config_option_e configuration_option;  ///< Display-preparation mode selected by configuration.
-      resolution_option_e resolution_option;  ///< Resolution-selection mode selected by configuration.
-      std::string manual_resolution;  ///< Manual resolution in case `resolution_option == resolution_option_e::manual`.
-      refresh_rate_option_e refresh_rate_option;  ///< Refresh-rate selection mode selected by configuration.
-      std::string manual_refresh_rate;  ///< Manual refresh rate in case `refresh_rate_option == refresh_rate_option_e::manual`.
-      hdr_option_e hdr_option;  ///< HDR-selection mode selected by configuration.
-      std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
-      bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
-      mode_remapping_t mode_remapping;  ///< Display mode remapping rules grouped by automatic selection mode.
-      workarounds_t wa;  ///< Display-device compatibility workarounds.
-    } dd;  ///< Display-device integration settings.
+    std::string adapter_name;  ///< Display adapter selected in configuration.
 
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
   };
@@ -206,7 +72,15 @@ namespace config {
     std::string sink;  ///< Audio output device/sink to use for audio capture
     std::string virtual_sink;  ///< Virtual audio sink for audio routing
     bool stream;  ///< Enable audio streaming to clients
-    bool install_steam_drivers;  ///< Install Steam audio drivers for enhanced compatibility
+  };
+
+  /**
+   * @brief Optional localhost application metrics; Telegraf owns remote delivery.
+   */
+  struct metrics_t {
+    bool enabled = false;  ///< Disabled unless the administrator opts in.
+    int port = 28991;  ///< IPv4 loopback UDP receiver, in the unprivileged port range.
+    int interval_seconds = 1;  ///< Export interval, 1 through 60 seconds.
   };
 
   /**
@@ -239,13 +113,6 @@ namespace config {
     std::chrono::milliseconds key_repeat_delay;  ///< Delay before repeating a held keyboard key.
     std::chrono::duration<double> key_repeat_period;  ///< Interval between repeated keyboard key events.
 
-#ifdef _WIN32
-    std::string gamepad;  ///< Legacy Windows-only virtual controller backend selection.
-    bool ds4_back_as_touchpad_click;  ///< Legacy Windows-only Back/Select mapping.
-    bool motion_as_ds4;  ///< Legacy Windows-only motion-controller mapping.
-    bool touchpad_as_ds4;  ///< Legacy Windows-only touch-controller mapping.
-    bool virtualhid_randomize_mac;  ///< Legacy Windows-only virtual controller identity policy.
-#endif
 
     bool keyboard;  ///< Enable keyboard input from clients.
     bool key_rightalt_to_key_win;  ///< Map the client Right Alt key to the Windows key.
@@ -254,6 +121,28 @@ namespace config {
 
     bool high_resolution_scrolling;  ///< Enable high-resolution mouse-wheel events.
   };
+
+  /**
+   * @brief Construct product input defaults before administrator overrides.
+   * @return Default input settings shared by the Host and component tests.
+   */
+  inline input_t default_input_config() {
+    return {
+      {
+        {0x10, 0xA0},
+        {0x11, 0xA2},
+        {0x12, 0xA4},
+      },
+      std::chrono::milliseconds {500},  // key_repeat_delay
+      std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
+
+      true,  // keyboard enabled
+      false,  // map Right Alt to the Windows key
+      true,  // mouse enabled
+      true,  // always send scancodes
+      true,  // high resolution scrolling
+    };
+  }
 
   namespace flag {
     /**
@@ -301,6 +190,7 @@ namespace config {
 
   extern video_t video;
   extern audio_t audio;
+  extern metrics_t metrics;
   extern stream_t stream;
   extern nvhttp_t nvhttp;
   extern input_t input;

@@ -4,6 +4,8 @@
  */
 
 // standard includes
+#include <array>
+#include <limits>
 #include <chrono>
 #include <cstring>
 #include <future>
@@ -783,3 +785,86 @@ TEST_F(InputRetainedSessionTest, NativeOtherKeyboardCannotModifyDragButOwnReleas
   EXPECT_EQ(keyboard->submit_count(), keys + 1);
 }
 #endif
+
+TEST_F(InputRetainedSessionTest, DisconnectReleasesMappedKey) {
+  std::uint64_t lease = 0;
+  auto session = allocate("mapped-key-release", lease);
+  auto saved = config::input.keybindings;
+  config::input.keybindings[0x41] = 0x42;
+  input::testing::handle_keyboard(session, 0x41, false);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x42);
+  input::reset(session, lease);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x42);
+  config::input.keybindings = std::move(saved);
+}
+
+#ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativeButtonsAndSignedScrollReachThePlatformDirectly) {
+  std::uint64_t lease = 0;
+  auto session = allocate("native-pointer-wire", lease);
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON_SIZE> button {1, PLANK_TRANSPORT_INPUT_ACTION_PRESS};
+  const auto before = mouse->submit_count();
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button.data(), button.size()));
+  ASSERT_EQ(mouse->submit_count(), before + 1);
+  EXPECT_EQ(mouse->last_submitted_event().button, lvh::MouseButton::left);
+  EXPECT_TRUE(mouse->last_submitted_event().pressed);
+  button[1] = PLANK_TRANSPORT_INPUT_ACTION_RELEASE;
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button.data(), button.size()));
+  EXPECT_FALSE(mouse->last_submitted_event().pressed);
+  button[1] = 2;
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button.data(), button.size()));
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_MOUSE_BUTTON, button.data(), button.size() - 1));
+  EXPECT_EQ(mouse->submit_count(), before + 2);
+
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_SCROLL_SIZE> scroll {};
+  for (const auto distance : {-32768, -120, -1, 1, 120, 32767}) {
+    plank_transport_input_write_u16(scroll.data(), static_cast<std::uint16_t>(distance));
+    ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_VERTICAL_SCROLL, scroll.data(), scroll.size()));
+    EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::vertical_scroll);
+    EXPECT_EQ(mouse->last_submitted_event().high_resolution_scroll, distance);
+    ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_HORIZONTAL_SCROLL, scroll.data(), scroll.size()));
+    EXPECT_EQ(mouse->last_submitted_event().kind, lvh::MouseEventKind::horizontal_scroll);
+    EXPECT_EQ(mouse->last_submitted_event().high_resolution_scroll, distance);
+  }
+}
+#endif
+
+#ifdef PLANK_TRANSPORT
+TEST_F(InputRetainedSessionTest, NativeKeyboardAndMalformedPayloadBoundaries) {
+  std::uint64_t lease = 0;
+  auto session = allocate("native-keyboard-wire", lease);
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_KEYBOARD_SIZE> key {};
+  plank_transport_input_write_u16(key.data(), 0x41);
+  key[2] = PLANK_TRANSPORT_INPUT_ACTION_PRESS;
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, key.data(), key.size()));
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x41);
+  key[2] = PLANK_TRANSPORT_INPUT_ACTION_RELEASE;
+  ASSERT_TRUE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, key.data(), key.size()));
+  key[2] = 2;
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, key.data(), key.size()));
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, key.data(), key.size() - 1));
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, nullptr, key.size()));
+  EXPECT_FALSE(input::native(session, 255, key.data(), key.size()));
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_UTF8_TEXT_MAX_SIZE + 1> oversized {};
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_UTF8_TEXT, oversized.data(), oversized.size()));
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_PEN_SIZE> pen {};
+  plank_transport_input_encode_pen(pen.data(), LI_TOUCH_EVENT_HOVER, LI_TOOL_TYPE_PEN, 0, 0, 0, std::numeric_limits<float>::quiet_NaN(), 0, 0, 0, 0);
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, pen.data(), pen.size()));
+  plank_transport_input_write_float(pen.data() + 8, 0.5F);
+  pen[6] = 1;
+  EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, pen.data(), pen.size()));
+}
+#endif
+
+TEST_F(InputRetainedSessionTest, ReconnectDoesNotRetainTheOldModifierChord) {
+  std::uint64_t lease = 0;
+  auto session = allocate("modifier-reset", lease);
+  for (const auto key : {0xa0, 0xa2, 0xa4}) {
+    input::testing::handle_keyboard(session, key, false);
+  }
+  input::reset(session, lease);
+  auto resumed = allocate("modifier-reset", lease);
+  // Stale Ctrl+Alt+Shift bookkeeping would consume F1 as a Host shortcut.
+  input::testing::handle_keyboard(resumed, 0x70, false);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x70);
+}
