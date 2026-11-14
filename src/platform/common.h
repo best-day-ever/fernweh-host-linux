@@ -879,6 +879,8 @@ namespace platf {
    */
   using input_t = util::safe_ptr<input_raw_t, &freeInput>;
 
+  std::filesystem::path appdata();
+
   /**
    * @brief Convert a socket address to a printable IP address.
    *
