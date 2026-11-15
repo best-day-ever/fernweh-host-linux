@@ -28,36 +28,16 @@
 #include "platform/common.h"
 #include "utility.h"
 
-#ifdef _WIN32
-  #include <shellapi.h>
-#endif
-
-#if defined(_WIN32) && !defined(DOXYGEN)
-  #ifdef _GLIBCXX_USE_C99_INTTYPES
-    #undef _GLIBCXX_USE_C99_INTTYPES
-  #endif
-  #include <AMF/components/VideoEncoderAV1.h>
-  #include <AMF/components/VideoEncoderHEVC.h>
-  #include <AMF/components/VideoEncoderVCE.h>
-#endif
-
-#if !defined(__ANDROID__) && !defined(__APPLE__)
-  // For NVENC legacy constants
-  #include <ffnvcodec/nvEncodeAPI.h>
-#endif
-
-#if (defined(linux) || defined(__FreeBSD__)) && !defined(DOXYGEN)
-  // For VAAPI rate control types
-  #include <va/va.h>
-#endif
-
 namespace fs = std::filesystem;
 using namespace std::literals;
 
 constexpr auto CA_DIR = "credentials";  ///< Subdirectory under app data that stores Sunshine credentials.
 const std::string PRIVATE_KEY_FILE = std::string(CA_DIR) + "/cakey.pem";  ///< Relative path to the persisted private key PEM file.
 const std::string CERTIFICATE_FILE = std::string(CA_DIR) + "/cacert.pem";  ///< Relative path to the persisted certificate PEM file.
+
 namespace config {
+
+  metrics_t metrics;
 
   namespace nv {
 
@@ -104,606 +84,6 @@ namespace config {
 
   }  // namespace nv
 
-  namespace amd {
-#if !defined(_WIN32) || defined(DOXYGEN)
-    // values accurate as of 27/12/2022, but aren't strictly necessary for MacOS build
-    constexpr int AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED = 100;  ///< Fallback AMF enum value for av1 quality preset speed.
-    constexpr int AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY = 30;  ///< Fallback AMF enum value for av1 quality preset quality.
-    constexpr int AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED = 70;  ///< Fallback AMF enum value for av1 quality preset balanced.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED = 10;  ///< Fallback AMF enum value for hevc quality preset speed.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY = 0;  ///< Fallback AMF enum value for hevc quality preset quality.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED = 5;  ///< Fallback AMF enum value for hevc quality preset balanced.
-    constexpr int AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED = 1;  ///< Fallback AMF enum value for quality preset speed.
-    constexpr int AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY = 2;  ///< Fallback AMF enum value for quality preset quality.
-    constexpr int AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED = 0;  ///< Fallback AMF enum value for quality preset balanced.
-    constexpr int AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CONSTANT_QP = 0;  ///< Fallback AMF enum value for av1 rate control method constant qp.
-    constexpr int AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR = 3;  ///< Fallback AMF enum value for av1 rate control method cbr.
-    constexpr int AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR = 2;  ///< Fallback AMF enum value for av1 rate control method peak constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR = 1;  ///< Fallback AMF enum value for av1 rate control method latency constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP = 0;  ///< Fallback AMF enum value for hevc rate control method constant qp.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR = 3;  ///< Fallback AMF enum value for hevc rate control method cbr.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR = 2;  ///< Fallback AMF enum value for hevc rate control method peak constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR = 1;  ///< Fallback AMF enum value for hevc rate control method latency constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP = 0;  ///< Fallback AMF enum value for rate control method constant qp.
-    constexpr int AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR = 1;  ///< Fallback AMF enum value for rate control method cbr.
-    constexpr int AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR = 2;  ///< Fallback AMF enum value for rate control method peak constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR = 3;  ///< Fallback AMF enum value for rate control method latency constrained vbr.
-    constexpr int AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING = 0;  ///< Fallback AMF enum value for av1 usage transcoding.
-    constexpr int AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY = 1;  ///< Fallback AMF enum value for av1 usage low latency.
-    constexpr int AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY = 2;  ///< Fallback AMF enum value for av1 usage ultra low latency.
-    constexpr int AMF_VIDEO_ENCODER_AV1_USAGE_WEBCAM = 3;  ///< Fallback AMF enum value for av1 usage webcam.
-    constexpr int AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY_HIGH_QUALITY = 5;  ///< Fallback AMF enum value for av1 usage low latency high quality.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCODING = 0;  ///< Fallback AMF enum value for hevc usage transcoding.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY = 1;  ///< Fallback AMF enum value for hevc usage ultra low latency.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY = 2;  ///< Fallback AMF enum value for hevc usage low latency.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_USAGE_WEBCAM = 3;  ///< Fallback AMF enum value for hevc usage webcam.
-    constexpr int AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY_HIGH_QUALITY = 5;  ///< Fallback AMF enum value for hevc usage low latency high quality.
-    constexpr int AMF_VIDEO_ENCODER_USAGE_TRANSCODING = 0;  ///< Fallback AMF enum value for usage transcoding.
-    constexpr int AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY = 1;  ///< Fallback AMF enum value for usage ultra low latency.
-    constexpr int AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY = 2;  ///< Fallback AMF enum value for usage low latency.
-    constexpr int AMF_VIDEO_ENCODER_USAGE_WEBCAM = 3;  ///< Fallback AMF enum value for usage webcam.
-    constexpr int AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY_HIGH_QUALITY = 5;  ///< Fallback AMF enum value for usage low latency high quality.
-    constexpr int AMF_VIDEO_ENCODER_UNDEFINED = 0;  ///< Fallback AMF enum value for undefined.
-    constexpr int AMF_VIDEO_ENCODER_CABAC = 1;  ///< Fallback AMF enum value for cabac.
-    constexpr int AMF_VIDEO_ENCODER_CALV = 2;  ///< Fallback AMF enum value for calv.
-#endif
-
-    /**
-     * @brief Enumerates supported quality AV1 options.
-     */
-    enum class quality_av1_e : int {
-      speed = AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED,  ///< Speed preset
-      quality = AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY,  ///< Quality preset
-      balanced = AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED  ///< Balanced preset
-    };
-
-    /**
-     * @brief Enumerates supported quality HEVC options.
-     */
-    enum class quality_hevc_e : int {
-      speed = AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED,  ///< Speed preset
-      quality = AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY,  ///< Quality preset
-      balanced = AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED  ///< Balanced preset
-    };
-
-    /**
-     * @brief Enumerates supported quality h264 options.
-     */
-    enum class quality_h264_e : int {
-      speed = AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED,  ///< Speed preset
-      quality = AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY,  ///< Quality preset
-      balanced = AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED  ///< Balanced preset
-    };
-
-    /**
-     * @brief Enumerates supported rc AV1 options.
-     */
-    enum class rc_av1_e : int {
-      cbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR,  ///< CBR
-      cqp = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
-      vbr_latency = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
-    };
-
-    /**
-     * @brief Enumerates supported rc HEVC options.
-     */
-    enum class rc_hevc_e : int {
-      cbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR,  ///< CBR
-      cqp = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
-      vbr_latency = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
-    };
-
-    /**
-     * @brief Enumerates supported rc h264 options.
-     */
-    enum class rc_h264_e : int {
-      cbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR,  ///< CBR
-      cqp = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
-      vbr_latency = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
-    };
-
-    /**
-     * @brief Enumerates supported usage AV1 options.
-     */
-    enum class usage_av1_e : int {
-      transcoding = AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING,  ///< Transcoding preset
-      webcam = AMF_VIDEO_ENCODER_AV1_USAGE_WEBCAM,  ///< Webcam preset
-      lowlatency_high_quality = AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY_HIGH_QUALITY,  ///< Low latency high quality preset
-      lowlatency = AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY,  ///< Low latency preset
-      ultralowlatency = AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY  ///< Ultra low latency preset
-    };
-
-    /**
-     * @brief Enumerates supported usage HEVC options.
-     */
-    enum class usage_hevc_e : int {
-      transcoding = AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCODING,  ///< Transcoding preset
-      webcam = AMF_VIDEO_ENCODER_HEVC_USAGE_WEBCAM,  ///< Webcam preset
-      lowlatency_high_quality = AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY_HIGH_QUALITY,  ///< Low latency high quality preset
-      lowlatency = AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY,  ///< Low latency preset
-      ultralowlatency = AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY  ///< Ultra low latency preset
-    };
-
-    /**
-     * @brief Enumerates supported usage h264 options.
-     */
-    enum class usage_h264_e : int {
-      transcoding = AMF_VIDEO_ENCODER_USAGE_TRANSCODING,  ///< Transcoding preset
-      webcam = AMF_VIDEO_ENCODER_USAGE_WEBCAM,  ///< Webcam preset
-      lowlatency_high_quality = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY_HIGH_QUALITY,  ///< Low latency high quality preset
-      lowlatency = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY,  ///< Low latency preset
-      ultralowlatency = AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY  ///< Ultra low latency preset
-    };
-
-    /**
-     * @brief Enumerates supported coder options.
-     */
-    enum coder_e : int {
-      _auto = AMF_VIDEO_ENCODER_UNDEFINED,  ///< Auto
-      cabac = AMF_VIDEO_ENCODER_CABAC,  ///< CABAC
-      cavlc = AMF_VIDEO_ENCODER_CALV  ///< CAVLC
-    };
-
-    /**
-     * @brief Parse an AMD quality preset while preserving the current value on invalid input.
-     *
-     * @param quality_type Configuration text naming the AMD quality preset.
-     * @param original Original text value used when reporting a parsing failure.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    template<class T>
-    ::std::optional<int> quality_from_view(const ::std::string_view &quality_type, const ::std::optional<int>(&original)) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (quality_type == #x##sv) \
-    return (int) T::x
-#endif
-      _CONVERT_(balanced);
-      _CONVERT_(quality);
-      _CONVERT_(speed);
-#undef _CONVERT_
-      return original;
-    }
-
-    /**
-     * @brief Parse an AMD rate-control mode while preserving the current value on invalid input.
-     *
-     * @param rc Rate-control mode selected in the configuration.
-     * @param original Original text value used when reporting a parsing failure.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    template<class T>
-    ::std::optional<int> rc_from_view(const ::std::string_view &rc, const ::std::optional<int>(&original)) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (rc == #x##sv) \
-    return (int) T::x
-#endif
-      _CONVERT_(cbr);
-      _CONVERT_(cqp);
-      _CONVERT_(vbr_latency);
-      _CONVERT_(vbr_peak);
-#undef _CONVERT_
-      return original;
-    }
-
-    /**
-     * @brief Parse an AMD encoder usage mode while preserving the current value on invalid input.
-     *
-     * @param usage Encoder usage mode selected in the configuration.
-     * @param original Original text value used when reporting a parsing failure.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    template<class T>
-    ::std::optional<int> usage_from_view(const ::std::string_view &usage, const ::std::optional<int>(&original)) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (usage == #x##sv) \
-    return (int) T::x
-#endif
-      _CONVERT_(lowlatency);
-      _CONVERT_(lowlatency_high_quality);
-      _CONVERT_(transcoding);
-      _CONVERT_(ultralowlatency);
-      _CONVERT_(webcam);
-#undef _CONVERT_
-      return original;
-    }
-
-    /**
-     * @brief Parse an entropy-coder mode from configuration text.
-     *
-     * @param coder Entropy-coder mode selected in the configuration.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int coder_from_view(const ::std::string_view &coder) {
-      if (coder == "auto"sv) {
-        return _auto;
-      }
-      if (coder == "cabac"sv || coder == "ac"sv) {
-        return cabac;
-      }
-      if (coder == "cavlc"sv || coder == "vlc"sv) {
-        return cavlc;
-      }
-
-      return _auto;
-    }
-  }  // namespace amd
-
-  namespace qsv {
-    /**
-     * @brief Enumerates supported preset options.
-     */
-    enum preset_e : int {
-      veryslow = 1,  ///< veryslow preset
-      slower = 2,  ///< slower preset
-      slow = 3,  ///< slow preset
-      medium = 4,  ///< medium preset
-      fast = 5,  ///< fast preset
-      faster = 6,  ///< faster preset
-      veryfast = 7  ///< veryfast preset
-    };
-
-    /**
-     * @brief Enumerates supported cavlc options.
-     */
-    enum cavlc_e : int {
-      _auto = false,  ///< Auto
-      enabled = true,  ///< Enabled
-      disabled = false  ///< Disabled
-    };
-
-    /**
-     * @brief Parse a QSV encoder preset from configuration text.
-     *
-     * @param preset Encoder preset value supplied by the configuration.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    std::optional<int> preset_from_view(const std::string_view &preset) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (preset == #x##sv) \
-    return x
-#endif
-      _CONVERT_(veryslow);
-      _CONVERT_(slower);
-      _CONVERT_(slow);
-      _CONVERT_(medium);
-      _CONVERT_(fast);
-      _CONVERT_(faster);
-      _CONVERT_(veryfast);
-#undef _CONVERT_
-      return std::nullopt;
-    }
-
-    /**
-     * @brief Parse an entropy-coder mode from configuration text.
-     *
-     * @param coder Entropy-coder mode selected in the configuration.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    std::optional<int> coder_from_view(const std::string_view &coder) {
-      if (coder == "auto"sv) {
-        return _auto;
-      }
-      if (coder == "cabac"sv || coder == "ac"sv) {
-        return disabled;
-      }
-      if (coder == "cavlc"sv || coder == "vlc"sv) {
-        return enabled;
-      }
-      return std::nullopt;
-    }
-
-  }  // namespace qsv
-
-  namespace vaapi {
-#if !(defined(linux) || defined(__FreeBSD__)) || defined(DOXYGEN)
-    constexpr int VA_RC_CBR = 0x00000002;  ///< CBR rate control
-    constexpr int VA_RC_VBR = 0x00000004;  ///< VBR rate control
-    constexpr int VA_RC_CQP = 0x00000010;  ///< CQP rate control
-    constexpr int VA_RC_ICQ = 0x00000040;  ///< ICQ rate control
-    constexpr int VA_RC_QVBR = 0x00000400;  ///< QVBR rate control
-    constexpr int VA_RC_AVBR = 0x00000800;  ///< AVBR rate control
-#endif
-    /**
-     * @brief Enumerates supported VA-API quality options.
-     */
-    enum class quality_e : int {
-      _auto = 0,  ///< Auto quality level
-      speed = 1,  ///< Speed level
-      balanced = 2,  ///< Balanced level
-      quality = 3  ///< Quality level
-    };
-
-    /**
-     * @brief Enumerates supported VA-API rc options.
-     */
-    enum class rc_e : int {
-      _auto = 0,  ///< Auto rate control
-      avbr = VA_RC_AVBR,  ///< AVBR - average variable bitrate
-      cbr = VA_RC_CBR,  ///< CBR - constant bitrate
-      cqp = VA_RC_CQP,  ///< CQP - constant QP
-      icq = VA_RC_ICQ,  ///< ICQ - intelligent QP
-      qvbr = VA_RC_QVBR,  ///< QVBR - quality-defined variable bitrate
-      vbr = VA_RC_VBR  ///< VBR - variable bitrate
-    };
-
-    /**
-     * @brief Parse a VA-API quality preset while preserving the current value on invalid input.
-     *
-     * @param quality_type Configuration text naming the VA-API quality preset.
-     * @param original Original text value used when reporting a parsing failure.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    template<class T>
-    ::std::optional<int> quality_from_view(const ::std::string_view &quality_type, const ::std::optional<int>(&original)) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (quality_type == #x##sv) \
-    return (int) T::x
-#endif
-      _CONVERT_(balanced);
-      _CONVERT_(quality);
-      _CONVERT_(speed);
-#ifdef _CONVERT_
-  #undef _CONVERT_
-#endif
-      return original;
-    }
-
-    /**
-     * @brief Parse a VA-API rate-control mode while preserving the current value on invalid input.
-     *
-     * @param rc Rate-control mode selected in the configuration.
-     * @param original Original text value used when reporting a parsing failure.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    template<class T>
-    ::std::optional<int> rc_from_view(const ::std::string_view &rc, const ::std::optional<int>(&original)) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (rc == #x##sv) \
-    return (int) T::x
-#endif
-      _CONVERT_(avbr);
-      _CONVERT_(cbr);
-      _CONVERT_(cqp);
-      _CONVERT_(icq);
-      _CONVERT_(qvbr);
-      _CONVERT_(vbr);
-#ifdef _CONVERT_
-  #undef _CONVERT_
-#endif
-      return original;
-    }
-
-  }  // namespace vaapi
-
-  namespace vt {
-
-    /**
-     * @brief Enumerates supported coder options.
-     */
-    enum coder_e : int {
-      _auto = 0,  ///< Auto
-      cabac,  ///< CABAC
-      cavlc  ///< CAVLC
-    };
-
-    /**
-     * @brief Parse an entropy-coder mode from configuration text.
-     *
-     * @param coder Entropy-coder mode selected in the configuration.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int coder_from_view(const std::string_view &coder) {
-      if (coder == "auto"sv) {
-        return _auto;
-      }
-      if (coder == "cabac"sv || coder == "ac"sv) {
-        return cabac;
-      }
-      if (coder == "cavlc"sv || coder == "vlc"sv) {
-        return cavlc;
-      }
-
-      return -1;
-    }
-
-    /**
-     * @brief Parse whether VideoToolbox software encoding is allowed.
-     *
-     * @param software Whether the software encoder path is being configured.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int allow_software_from_view(const std::string_view &software) {
-      if (software == "allowed"sv || software == "forced") {
-        return 1;
-      }
-
-      return 0;
-    }
-
-    /**
-     * @brief Parse whether VideoToolbox software encoding is forced.
-     *
-     * @param software Whether the software encoder path is being configured.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int force_software_from_view(const std::string_view &software) {
-      if (software == "forced") {
-        return 1;
-      }
-
-      return 0;
-    }
-
-    /**
-     * @brief Parse the VideoToolbox realtime encoder flag.
-     *
-     * @param rt Real-time encoder usage selector.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int rt_from_view(const std::string_view &rt) {
-      if (rt == "disabled" || rt == "off" || rt == "0") {
-        return 0;
-      }
-
-      return 1;
-    }
-
-  }  // namespace vt
-
-  namespace sw {
-    /**
-     * @brief Parse an SVT-AV1 speed preset from configuration text.
-     *
-     * @param preset Encoder preset value supplied by the configuration.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    int svtav1_preset_from_view(const std::string_view &preset) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x, y) \
-    if (preset == #x##sv) \
-    return y
-#endif
-      _CONVERT_(veryslow, 1);
-      _CONVERT_(slower, 2);
-      _CONVERT_(slow, 4);
-      _CONVERT_(medium, 5);
-      _CONVERT_(fast, 7);
-      _CONVERT_(faster, 9);
-      _CONVERT_(veryfast, 10);
-      _CONVERT_(superfast, 11);
-      _CONVERT_(ultrafast, 12);
-#undef _CONVERT_
-      return 11;  // Default to superfast
-    }
-  }  // namespace sw
-
-  namespace dd {
-    /**
-     * @brief Parse display-device preparation mode from configuration text.
-     *
-     * @param value Configuration text from the display-device preparation setting.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    video_t::dd_t::config_option_e config_option_from_view(const std::string_view value) {
-#ifndef DOXYGEN
-  #define _CONVERT_(x) \
-    if (value == #x##sv) \
-    return video_t::dd_t::config_option_e::x
-#endif
-      _CONVERT_(disabled);
-      _CONVERT_(verify_only);
-      _CONVERT_(ensure_active);
-      _CONVERT_(ensure_primary);
-      _CONVERT_(ensure_only_display);
-#undef _CONVERT_
-      return video_t::dd_t::config_option_e::disabled;  // Default to this if value is invalid
-    }
-
-    /**
-     * @brief Parse display-device resolution mode from configuration text.
-     *
-     * @param value Configuration text from the display-device resolution setting.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    video_t::dd_t::resolution_option_e resolution_option_from_view(const std::string_view value) {
-#ifndef DOXYGEN
-  #define _CONVERT_2_ARG_(str, val) \
-    if (value == #str##sv) \
-    return video_t::dd_t::resolution_option_e::val
-  #define _CONVERT_(x) _CONVERT_2_ARG_(x, x)
-#endif
-      _CONVERT_(disabled);
-      _CONVERT_2_ARG_(auto, automatic);
-      _CONVERT_(manual);
-#undef _CONVERT_
-#undef _CONVERT_2_ARG_
-      return video_t::dd_t::resolution_option_e::disabled;  // Default to this if value is invalid
-    }
-
-    /**
-     * @brief Parse display-device refresh-rate mode from configuration text.
-     *
-     * @param value Configuration text from the display-device refresh-rate setting.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    video_t::dd_t::refresh_rate_option_e refresh_rate_option_from_view(const std::string_view value) {
-#ifndef DOXYGEN
-  #define _CONVERT_2_ARG_(str, val) \
-    if (value == #str##sv) \
-    return video_t::dd_t::refresh_rate_option_e::val
-  #define _CONVERT_(x) _CONVERT_2_ARG_(x, x)
-#endif
-      _CONVERT_(disabled);
-      _CONVERT_2_ARG_(auto, automatic);
-      _CONVERT_(manual);
-#undef _CONVERT_
-#undef _CONVERT_2_ARG_
-      return video_t::dd_t::refresh_rate_option_e::disabled;  // Default to this if value is invalid
-    }
-
-    /**
-     * @brief Parse display-device HDR mode from configuration text.
-     *
-     * @param value Configuration text from the display-device HDR setting.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    video_t::dd_t::hdr_option_e hdr_option_from_view(const std::string_view value) {
-#ifndef DOXYGEN
-  #define _CONVERT_2_ARG_(str, val) \
-    if (value == #str##sv) \
-    return video_t::dd_t::hdr_option_e::val
-  #define _CONVERT_(x) _CONVERT_2_ARG_(x, x)
-#endif
-      _CONVERT_(disabled);
-      _CONVERT_2_ARG_(auto, automatic);
-#undef _CONVERT_
-#undef _CONVERT_2_ARG_
-      return video_t::dd_t::hdr_option_e::disabled;  // Default to this if value is invalid
-    }
-
-    /**
-     * @brief Parse display-mode remapping rules from JSON configuration text.
-     *
-     * @param value JSON array text from the display-device mode-remapping setting.
-     * @return Parsed enum value, or the setting-specific default when the text is unknown.
-     */
-    video_t::dd_t::mode_remapping_t mode_remapping_from_view(const std::string_view value) {
-      const auto parse_entry_list {[](const auto &entry_list, auto &output_field) {
-        for (auto &[_, entry] : entry_list) {
-          auto requested_resolution = entry.template get_optional<std::string>("requested_resolution"s);
-          auto requested_fps = entry.template get_optional<std::string>("requested_fps"s);
-          auto final_resolution = entry.template get_optional<std::string>("final_resolution"s);
-          auto final_refresh_rate = entry.template get_optional<std::string>("final_refresh_rate"s);
-
-          output_field.push_back(video_t::dd_t::mode_remapping_entry_t {requested_resolution.value_or(""), requested_fps.value_or(""), final_resolution.value_or(""), final_refresh_rate.value_or("")});
-        }
-      }};
-
-      // We need to add a wrapping object to make it valid JSON, otherwise ptree cannot parse it.
-      std::stringstream json_stream;
-      json_stream << "{\"dd_mode_remapping\":" << value << "}";
-
-      boost::property_tree::ptree json_tree;
-      boost::property_tree::read_json(json_stream, json_tree);
-
-      video_t::dd_t::mode_remapping_t output;
-      parse_entry_list(json_tree.get_child("dd_mode_remapping.mixed"), output.mixed);
-      parse_entry_list(json_tree.get_child("dd_mode_remapping.resolution_only"), output.resolution_only);
-      parse_entry_list(json_tree.get_child("dd_mode_remapping.refresh_rate_only"), output.refresh_rate_only);
-
-      return output;
-    }
-  }  // namespace dd
-
   /**
    * @brief Default video configuration values used before file and CLI overrides.
    */
@@ -714,74 +94,13 @@ namespace config {
     {
       "superfast"s,  // preset
       "zerolatency"s,  // tune
-      11,  // superfast
       100,  // VBV maximum-rate percentage
       0,  // VBV buffer frames (legacy automatic sizing)
       0,  // scene-change threshold
     },  // software
 
     {},  // nv
-    true,  // nv_realtime_hags
-    true,  // nv_opengl_vulkan_on_dxgi
-    true,  // nv_sunshine_high_power_mode
-    {},  // nv_legacy
-
-    {
-      qsv::medium,  // preset
-      qsv::_auto,  // cavlc
-      false,  // slow_hevc
-    },  // qsv
-
-    {
-      (int) amd::usage_h264_e::ultralowlatency,  // usage (h264)
-      (int) amd::usage_hevc_e::ultralowlatency,  // usage (hevc)
-      (int) amd::usage_av1_e::ultralowlatency,  // usage (av1)
-      (int) amd::rc_h264_e::vbr_latency,  // rate control (h264)
-      (int) amd::rc_hevc_e::vbr_latency,  // rate control (hevc)
-      (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
-      0,  // enforce_hrd
-      (int) amd::quality_h264_e::balanced,  // quality (h264)
-      (int) amd::quality_hevc_e::balanced,  // quality (hevc)
-      (int) amd::quality_av1_e::balanced,  // quality (av1)
-      0,  // preanalysis
-      1,  // vbaq
-      (int) amd::coder_e::_auto,  // coder
-    },  // amd
-
-    {
-      0,
-      0,
-      1,
-      -1,
-    },  // vt
-
-    {
-      0,  // blbrc
-      std::to_underlying(vaapi::quality_e::_auto),  // quality
-      std::to_underlying(vaapi::rc_e::_auto),  // rate control
-      {},  // rate control string
-      false,  // strict_rc_buffer
-    },  // vaapi
-
-    {
-      2,  // vk.tune (default: ll - low latency)
-      2,  // vk.rc_mode (default: cbr)
-    },
-
     {},  // adapter_name
-
-    {
-      video_t::dd_t::config_option_e::disabled,  // configuration_option
-      video_t::dd_t::resolution_option_e::automatic,  // resolution_option
-      {},  // manual_resolution
-      video_t::dd_t::refresh_rate_option_e::automatic,  // refresh_rate_option
-      {},  // manual_refresh_rate
-      video_t::dd_t::hdr_option_e::automatic,  // hdr_option
-      3s,  // config_revert_delay
-      {},  // config_revert_on_disconnect
-      {},  // mode_remapping
-      {}  // wa
-    },  // display_device
 
     0  // minimum_fps_target (0 = framerate)
   };
@@ -793,7 +112,6 @@ namespace config {
     {},  // audio_sink
     {},  // virtual_sink
     true,  // stream audio
-    true,  // install_steam_drivers
   };
 
   /**
@@ -818,29 +136,7 @@ namespace config {
   /**
    * @brief Default input configuration values used before file and CLI overrides.
    */
-  input_t input {
-    {
-      {0x10, 0xA0},
-      {0x11, 0xA2},
-      {0x12, 0xA4},
-    },
-    500ms,  // key_repeat_delay
-    std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
-
-#ifdef _WIN32
-    "auto"s,  // Legacy Windows-only virtual-HID gamepad profile
-    false,  // legacy gamepad touchpad click mapping disabled
-    false,  // legacy gamepad motion mapping disabled
-    false,  // legacy gamepad touch mapping disabled
-    false,  // legacy gamepad identity randomization disabled
-#endif
-
-    true,  // keyboard enabled
-    false,  // map Right Alt to the Windows key
-    true,  // mouse enabled
-    true,  // always send scancodes
-    true,  // high resolution scrolling
-  };
+  input_t input = default_input_config();
 
   /**
    * @brief Default top-level Sunshine configuration values used before file and CLI overrides.
@@ -848,18 +144,10 @@ namespace config {
   sunshine_t sunshine {
     2,  // min_log_level
     0,  // flags
-#ifdef PLANK_PRODUCT_BUILD
     "/etc/plank/host.conf",  // config file
-#else
-    platf::appdata().string() + "/sunshine.conf",  // config file
-#endif
     {},  // cmd args
     28989,  // Base port number
-#ifdef PLANK_PRODUCT_BUILD
     "/var/log/plank/host.log",  // log file
-#else
-    platf::appdata().string() + "/sunshine.log",  // log file
-#endif
     false,  // PLANK mDNS advertisement
     "physical",  // PLANK startup display policy
     false,  // PLANK lock the captured desktop after the last stream
@@ -1140,9 +428,6 @@ namespace config {
    * @param input Destination field updated when the setting exists and parses successfully.
    */
   void path_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, fs::path &input) {
-    // appdata needs to be retrieved once only
-    static auto appdata = platf::appdata();
-
     std::string temp;
     string_f(vars, name, temp);
 
@@ -1151,7 +436,7 @@ namespace config {
     }
 
     if (input.is_relative()) {
-      input = appdata / input;
+      input = fs::absolute(sunshine.config_file).parent_path() / input;
     }
 
     auto dir = input;
@@ -1526,9 +811,6 @@ namespace config {
 
     int_f(vars, "min_threads", video.min_threads);
     string_f(vars, "sw_preset", video.sw.sw_preset);
-    if (!video.sw.sw_preset.empty()) {
-      video.sw.svtav1_preset = sw::svtav1_preset_from_view(video.sw.sw_preset);
-    }
     string_f(vars, "sw_tune", video.sw.sw_tune);
     int_between_f(vars, "sw_vbv_maxrate_percentage", video.sw.vbv_maxrate_percentage, {100, 400});
     int_between_f(vars, "sw_vbv_buffer_frames", video.sw.vbv_buffer_frames, {0, 16});
@@ -1541,16 +823,6 @@ namespace config {
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     generic_f(vars, "nvenc_split_encode", video.nv.split_frame_encoding, nv::split_encode_from_view);
 
-#if !defined(__ANDROID__) && !defined(__APPLE__)
-    video.nv_legacy.preset = video.nv.quality_preset + 11;
-    video.nv_legacy.multipass = video.nv.two_pass == nvenc::nvenc_two_pass::quarter_resolution ? NV_ENC_TWO_PASS_QUARTER_RESOLUTION :
-                                video.nv.two_pass == nvenc::nvenc_two_pass::full_resolution    ? NV_ENC_TWO_PASS_FULL_RESOLUTION :
-                                                                                                 NV_ENC_MULTI_PASS_DISABLED;
-    video.nv_legacy.h264_coder = video.nv.h264_cavlc ? NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC : NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
-    video.nv_legacy.aq = video.nv.adaptive_quantization;
-    video.nv_legacy.vbv_percentage_increase = video.nv.vbv_percentage_increase;
-#endif
-
     string_f(vars, "adapter_name", video.adapter_name);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 
@@ -1558,6 +830,30 @@ namespace config {
     path_f(vars, "cert", nvhttp.cert);
     string_f(vars, "host_name", nvhttp.host_name);
     bool_f(vars, "publish_session_user", nvhttp.publish_session_user);
+    std::string metrics_flag = metrics.enabled ? "true" : "false";
+    string_f(vars, "metrics_enabled", metrics_flag);
+    bool metrics_valid = metrics_flag == "true" || metrics_flag == "false";
+    metrics.enabled = metrics_flag == "true";
+    for (const auto *key : {"metrics_port", "metrics_interval_seconds"}) {
+      if (const auto value = vars.find(key); value != vars.end()) {
+        metrics_valid &= !value->second.empty() && value->second.size() <= 5 &&
+                         value->second.find_first_not_of("0123456789") == std::string::npos;
+      }
+    }
+    try {
+      int_f(vars, "metrics_port", metrics.port);
+      int_f(vars, "metrics_interval_seconds", metrics.interval_seconds);
+    } catch (const std::exception &) {
+      vars.erase("metrics_port");
+      vars.erase("metrics_interval_seconds");
+      metrics_valid = false;
+    }
+    if (!metrics_valid || metrics.port < 1024 || metrics.port > 65535 ||
+        metrics.interval_seconds < 1 || metrics.interval_seconds > 60) {
+      BOOST_LOG(warning) << "PLANK metrics disabled: invalid local port or interval";
+      metrics.enabled = false;
+    }
+
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 
@@ -1656,10 +952,6 @@ namespace config {
    */
   int parse(int argc, char *argv[]) {
     std::unordered_map<std::string, std::string> cmd_vars;
-#ifdef _WIN32
-    bool shortcut_launch = false;
-    bool service_admin_launch = false;
-#endif
 
     for (auto x = 1; x < argc; ++x) {
       auto line = argv[x];
@@ -1667,15 +959,7 @@ namespace config {
       if (line == "--help"sv) {
         logging::print_help(*argv);
         return 1;
-      }
-#ifdef _WIN32
-      else if (line == "--shortcut"sv) {
-        shortcut_launch = true;
-      } else if (line == "--shortcut-admin"sv) {
-        service_admin_launch = true;
-      }
-#endif
-      else if (*line == '-') {
+      } else if (*line == '-') {
         if (*(line + 1) == '-') {
           sunshine.cmd.name = line + 2;
           sunshine.cmd.argc = argc - x - 1;
@@ -1714,16 +998,9 @@ namespace config {
 
     bool config_loaded = false;
     try {
-      // Create appdata folder if it does not exist
-      file_handler::make_directory(platf::appdata().string());
-
       // A packaged PLANK host has one administrator-owned configuration source.
       if (!fs::exists(sunshine.config_file)) {
-#ifdef PLANK_PRODUCT_BUILD
         throw std::runtime_error("PLANK host configuration does not exist: " + sunshine.config_file);
-#else
-        std::ofstream {sunshine.config_file};
-#endif
       }
 
       // Read config file
@@ -1744,61 +1021,9 @@ namespace config {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
     }
 
-#ifdef _WIN32
-    // UCRT64 raises an access denied exception if launching from the shortcut
-    // as non-admin and the config folder is not yet present; we can defer
-    // so that service instance will do the work instead.
-
-    if (!config_loaded && !shortcut_launch) {
-      BOOST_LOG(fatal) << "To relaunch Sunshine successfully, use the shortcut in the Start Menu. Do not run Sunshine.exe manually."sv;
-      std::this_thread::sleep_for(10s);
-#else
     if (!config_loaded) {
-#endif
       return -1;
     }
-
-#ifdef _WIN32
-    // We have to wait until the config is loaded to handle these launches,
-    // because we need to have the correct base port loaded in our config.
-    // Exception: UCRT64 shortcut_launch instances may have no config loaded due to
-    // insufficient permissions to create folder; port defaults will be acceptable.
-    if (service_admin_launch) {
-      // This is a relaunch as admin to start the service
-      service_ctrl::start_service();
-
-      // Always return 1 to ensure Sunshine doesn't start normally
-      return 1;
-    }
-    if (shortcut_launch) {
-      if (!service_ctrl::is_service_running()) {
-        // If the service isn't running, relaunch ourselves as admin to start it
-        WCHAR executable[MAX_PATH];
-        GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
-
-        SHELLEXECUTEINFOW shell_exec_info {};
-        shell_exec_info.cbSize = sizeof(shell_exec_info);
-        shell_exec_info.fMask = SEE_MASK_NOASYNC | SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS;
-        shell_exec_info.lpVerb = L"runas";
-        shell_exec_info.lpFile = executable;
-        shell_exec_info.lpParameters = L"--shortcut-admin";
-        shell_exec_info.nShow = SW_NORMAL;
-        if (!ShellExecuteExW(&shell_exec_info)) {
-          auto winerr = GetLastError();
-          BOOST_LOG(error) << "Failed executing shell command: " << winerr << std::endl;
-          return 1;
-        }
-
-        // Wait for the elevated process to finish starting the service
-        WaitForSingleObject(shell_exec_info.hProcess, INFINITE);
-        CloseHandle(shell_exec_info.hProcess);
-
-      }
-
-      // Always return 1 to ensure Sunshine doesn't start normally
-      return 1;
-    }
-#endif
 
     return 0;
   }

@@ -17,11 +17,11 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <X11/Xatom.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/X.h>
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <xcb/shm.h>
@@ -29,33 +29,22 @@
 
 // local includes
 #include "cuda.h"
-#include "graphics.h"
+#include "cursor_image.h"
 #include "misc.h"
+#include "src/capture_image_pool.h"
 #include "src/config.h"
+#include "src/frame_timing.h"
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/video.h"
-#include "vaapi.h"
-#include "x11grab.h"
+#include "x11_capture_batch.h"
 #include "x11_worker_exit.h"
+#include "x11grab.h"
 
 using namespace std::literals;
 
 namespace platf {
-  void x11::unpack_xrgb10_to_gbr10_row(const std::uint32_t *source,
-                                       std::uint16_t *green,
-                                       std::uint16_t *blue,
-                                       std::uint16_t *red,
-                                       std::size_t pixel_count) {
-    for (std::size_t x = 0; x < pixel_count; ++x) {
-      const std::uint32_t pixel = source[x];
-      red[x] = static_cast<std::uint16_t>(pixel & 0x3ffU);
-      green[x] = static_cast<std::uint16_t>((pixel >> 10U) & 0x3ffU);
-      blue[x] = static_cast<std::uint16_t>((pixel >> 20U) & 0x3ffU);
-    }
-  }
-
   namespace {
     constexpr std::uint32_t bilinear_weight_one = 1U << 16U;
 
@@ -124,12 +113,15 @@ namespace platf {
       unsigned int share_index,
       unsigned int share_count
     ) {
-      for (std::size_t y = share_index; y < y_samples.size(); y += share_count) {
+      const auto [first, last] = x11::row_range(y_samples.size(), share_index, share_count);
+      for (std::size_t y = first; y < last; ++y) {
         const auto &y_sample = y_samples[y];
         const auto *top = reinterpret_cast<const std::uint32_t *>(
-          source + static_cast<std::size_t>(y_sample.lower) * source_pitch);
+          source + static_cast<std::size_t>(y_sample.lower) * source_pitch
+        );
         const auto *bottom = reinterpret_cast<const std::uint32_t *>(
-          source + static_cast<std::size_t>(y_sample.upper) * source_pitch);
+          source + static_cast<std::size_t>(y_sample.upper) * source_pitch
+        );
         auto *green_row = reinterpret_cast<std::uint16_t *>(green + y * green_pitch);
         auto *blue_row = reinterpret_cast<std::uint16_t *>(blue + y * blue_pitch);
         auto *red_row = reinterpret_cast<std::uint16_t *>(red + y * red_pitch);
@@ -140,31 +132,38 @@ namespace platf {
           const auto bottom_left = bottom[x_sample.lower];
           const auto bottom_right = bottom[x_sample.upper];
           red_row[x] = bilinear_xrgb10_channel(
-            top_left, top_right, bottom_left, bottom_right, 0U,
-            x_sample.upper_weight, y_sample.upper_weight);
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+            0U,
+            x_sample.upper_weight,
+            y_sample.upper_weight
+          );
           green_row[x] = bilinear_xrgb10_channel(
-            top_left, top_right, bottom_left, bottom_right, 10U,
-            x_sample.upper_weight, y_sample.upper_weight);
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+            10U,
+            x_sample.upper_weight,
+            y_sample.upper_weight
+          );
           blue_row[x] = bilinear_xrgb10_channel(
-            top_left, top_right, bottom_left, bottom_right, 20U,
-            x_sample.upper_weight, y_sample.upper_weight);
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+            20U,
+            x_sample.upper_weight,
+            y_sample.upper_weight
+          );
         }
       }
     }
   }  // namespace
 
-  void x11::scale_xrgb10_to_gbr10(const std::uint8_t *source,
-                                  std::size_t source_pitch,
-                                  int source_width,
-                                  int source_height,
-                                  std::uint16_t *green,
-                                  std::size_t green_pitch,
-                                  std::uint16_t *blue,
-                                  std::size_t blue_pitch,
-                                  std::uint16_t *red,
-                                  std::size_t red_pitch,
-                                  int destination_width,
-                                  int destination_height) {
+  void x11::scale_xrgb10_to_gbr10(const std::uint8_t *source, std::size_t source_pitch, int source_width, int source_height, std::uint16_t *green, std::size_t green_pitch, std::uint16_t *blue, std::size_t blue_pitch, std::uint16_t *red, std::size_t red_pitch, int destination_width, int destination_height) {
     if (!source || !green || !blue || !red || source_width <= 0 || source_height <= 0 ||
         destination_width <= 0 || destination_height <= 0) {
       return;
@@ -172,10 +171,19 @@ namespace platf {
     const auto x_samples = make_bilinear_axis_samples(source_width, destination_width);
     const auto y_samples = make_bilinear_axis_samples(source_height, destination_height);
     scale_xrgb10_to_gbr10_rows(
-      source, source_pitch, x_samples, y_samples,
-      reinterpret_cast<std::uint8_t *>(green), green_pitch,
-      reinterpret_cast<std::uint8_t *>(blue), blue_pitch,
-      reinterpret_cast<std::uint8_t *>(red), red_pitch, 0U, 1U);
+      source,
+      source_pitch,
+      x_samples,
+      y_samples,
+      reinterpret_cast<std::uint8_t *>(green),
+      green_pitch,
+      reinterpret_cast<std::uint8_t *>(blue),
+      blue_pitch,
+      reinterpret_cast<std::uint8_t *>(red),
+      red_pitch,
+      0U,
+      1U
+    );
   }
 
   /**
@@ -408,9 +416,7 @@ namespace platf {
   namespace xcb {
     static xcb_extension_t *shm_id;
 
-    _FN(shm_get_image_reply, xcb_shm_get_image_reply_t *, (xcb_connection_t * c, xcb_shm_get_image_cookie_t cookie, xcb_generic_error_t **e));
-
-    _FN(shm_get_image_unchecked, xcb_shm_get_image_cookie_t, (xcb_connection_t * c, xcb_drawable_t drawable, int16_t x, int16_t y, uint16_t width, uint16_t height, uint32_t plane_mask, uint8_t format, xcb_shm_seg_t shmseg, uint32_t offset));
+    x11::capture_api_t capture_api;  ///< Checked capture requests batched on one connection.
 
     _FN(shm_attach_checked, xcb_void_cookie_t, (xcb_connection_t * c, xcb_shm_seg_t shmseg, uint32_t shmid, uint8_t read_only));
     _FN(shm_detach, xcb_void_cookie_t, (xcb_connection_t * c, xcb_shm_seg_t shmseg));
@@ -446,8 +452,8 @@ namespace platf {
 
       std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
         {(dyn::apiproc *) &shm_id, "xcb_shm_id"},
-        {(dyn::apiproc *) &shm_get_image_reply, "xcb_shm_get_image_reply"},
-        {(dyn::apiproc *) &shm_get_image_unchecked, "xcb_shm_get_image_unchecked"},
+        {(dyn::apiproc *) &capture_api.image_reply, "xcb_shm_get_image_reply"},
+        {(dyn::apiproc *) &capture_api.image, "xcb_shm_get_image"},
         {(dyn::apiproc *) &shm_attach_checked, "xcb_shm_attach_checked"},
         {(dyn::apiproc *) &shm_detach, "xcb_shm_detach"},
       };
@@ -488,6 +494,11 @@ namespace platf {
         {(dyn::apiproc *) &generate_id, "xcb_generate_id"},
         {(dyn::apiproc *) &request_check, "xcb_request_check"},
         {(dyn::apiproc *) &flush, "xcb_flush"},
+        {(dyn::apiproc *) &capture_api.geometry, "xcb_get_geometry"},
+        {(dyn::apiproc *) &capture_api.watch, "xcb_change_window_attributes_checked"},
+        {(dyn::apiproc *) &capture_api.check, "xcb_request_check"},
+        {(dyn::apiproc *) &capture_api.poll, "xcb_poll_for_event"},
+        {(dyn::apiproc *) &capture_api.geometry_reply, "xcb_get_geometry_reply"},
       };
 
       if (dyn::load(handle, funcs)) {
@@ -515,7 +526,6 @@ namespace platf {
   /**
    * @brief XCB image pointer released with `xcb_image_destroy`.
    */
-  using xcb_img_t = util::c_ptr<xcb_shm_get_image_reply_t>;
 
   /**
    * @brief XFixes cursor image pointer released with `XFree`.
@@ -564,6 +574,7 @@ namespace platf {
     }
 
     ~native10_img_t() override {
+      upload_registration.reset();
       if (connection && connection->connection && segment != 0) {
         std::lock_guard lock {connection->mutex};
         xcb::shm_detach(connection->connection.get(), segment);
@@ -579,6 +590,7 @@ namespace platf {
     }
 
     std::shared_ptr<native10_connection_t> connection;  ///< Connection kept alive by this image.
+    std::unique_ptr<platf::deinit_t> upload_registration;  ///< CUDA pin released before shmdt.
     xcb_shm_seg_t segment {};  ///< XCB-side segment identifier.
     int shm_id {-1};  ///< SysV shared-memory identifier.
     void *mapping {(void *) -1};  ///< Process mapping returned by shmat().
@@ -597,7 +609,6 @@ namespace platf {
         source_width {width},
         source_height {height},
         requested_format {requested_format} {
-      data = reinterpret_cast<void *>(0x1);
     }
 
     ~native10_software_t() override {
@@ -608,10 +619,10 @@ namespace platf {
       workers.clear();
     }
 
-    int set_frame(AVFrame *new_frame, AVBufferRef *hw_frames_ctx) override {
+    int set_frame(AVFrame *new_frame) override {
       host_frame.reset(new_frame);
       frame = new_frame;
-      if (hw_frames_ctx || !frame || requested_format != pix_fmt_e::yuv444p16 ||
+      if (!frame || requested_format != pix_fmt_e::yuv444p16 ||
           frame->format != AV_PIX_FMT_YUV444P10LE) {
         BOOST_LOG(error) << "Native X11 10-bit capture requires planar H.264 10-bit 4:4:4 software input"sv;
         return -1;
@@ -703,29 +714,46 @@ namespace platf {
     void unpack_rows(unsigned int share_index, unsigned int share_count) {
       if (!x_samples.empty()) {
         scale_xrgb10_to_gbr10_rows(
-          source, static_cast<std::size_t>(source_pitch), x_samples, y_samples,
-          frame->data[0], static_cast<std::size_t>(frame->linesize[0]),
-          frame->data[1], static_cast<std::size_t>(frame->linesize[1]),
-          frame->data[2], static_cast<std::size_t>(frame->linesize[2]),
-          share_index, share_count);
+          source,
+          static_cast<std::size_t>(source_pitch),
+          x_samples,
+          y_samples,
+          frame->data[0],
+          static_cast<std::size_t>(frame->linesize[0]),
+          frame->data[1],
+          static_cast<std::size_t>(frame->linesize[1]),
+          frame->data[2],
+          static_cast<std::size_t>(frame->linesize[2]),
+          share_index,
+          share_count
+        );
         return;
       }
-      for (int y = static_cast<int>(share_index); y < output_height;
-           y += static_cast<int>(share_count)) {
+      const auto [first, last] = x11::row_range(output_height, share_index, share_count);
+      for (std::size_t y = first; y < last; ++y) {
         const auto *source_row = reinterpret_cast<const std::uint32_t *>(
-          source + static_cast<std::size_t>(y) * source_pitch);
+          source + static_cast<std::size_t>(y) * source_pitch
+        );
         auto *green = reinterpret_cast<std::uint16_t *>(
-          frame->data[0] + static_cast<std::size_t>(y) * frame->linesize[0]);
+          frame->data[0] + static_cast<std::size_t>(y) * frame->linesize[0]
+        );
         auto *blue = reinterpret_cast<std::uint16_t *>(
-          frame->data[1] + static_cast<std::size_t>(y) * frame->linesize[1]);
+          frame->data[1] + static_cast<std::size_t>(y) * frame->linesize[1]
+        );
         auto *red = reinterpret_cast<std::uint16_t *>(
-          frame->data[2] + static_cast<std::size_t>(y) * frame->linesize[2]);
+          frame->data[2] + static_cast<std::size_t>(y) * frame->linesize[2]
+        );
         x11::unpack_xrgb10_to_gbr10_row(
-          source_row, green, blue, red, static_cast<std::size_t>(output_width));
+          source_row,
+          green,
+          blue,
+          red,
+          static_cast<std::size_t>(output_width)
+        );
       }
     }
 
-    frame_t host_frame;  ///< Owned FFmpeg software frame.
+    video::avcodec_frame_t host_frame;  ///< Owned FFmpeg software frame.
     std::vector<std::jthread> workers;  ///< Persistent packed-to-planar workers.
     std::mutex work_mutex;  ///< Protects generation and completion state.
     std::condition_variable_any work_ready;  ///< Signals a new source frame.
@@ -742,107 +770,6 @@ namespace platf {
     int output_height {0};  ///< Planar x264 destination height.
     pix_fmt_e requested_format;  ///< Negotiated PLANK format.
   };
-
-  static void blend_cursor(Display *display, img_t &img, int offsetX, int offsetY) {
-    xcursor_t overlay {x11::fix::GetCursorImage(display)};
-
-    if (!overlay) {
-      BOOST_LOG(error) << "Couldn't get cursor from XFixesGetCursorImage"sv;
-      return;
-    }
-
-    overlay->x -= overlay->xhot;
-    overlay->y -= overlay->yhot;
-
-    overlay->x -= offsetX;
-    overlay->y -= offsetY;
-
-    overlay->x = std::max((short) 0, overlay->x);
-    overlay->y = std::max((short) 0, overlay->y);
-
-    auto pixels = (int *) img.data;
-
-    auto screen_height = img.height;
-    auto screen_width = img.width;
-
-    auto delta_height = std::min<uint16_t>(overlay->height, std::max(0, screen_height - overlay->y));
-    auto delta_width = std::min<uint16_t>(overlay->width, std::max(0, screen_width - overlay->x));
-    for (auto y = 0; y < delta_height; ++y) {
-      auto overlay_begin = &overlay->pixels[y * overlay->width];
-      auto overlay_end = &overlay->pixels[y * overlay->width + delta_width];
-
-      auto pixels_begin = &pixels[(y + overlay->y) * (img.row_pitch / img.pixel_pitch) + overlay->x];
-
-      std::for_each(overlay_begin, overlay_end, [&](long pixel) {
-        int *pixel_p = (int *) &pixel;
-
-        auto colors_in = (uint8_t *) pixels_begin;
-
-        auto alpha = (*(uint *) pixel_p) >> 24u;
-        if (alpha == 255) {
-          *pixels_begin = *pixel_p;
-        } else {
-          auto colors_out = (uint8_t *) pixel_p;
-          colors_in[0] = colors_out[0] + (colors_in[0] * (255 - alpha) + 255 / 2) / 255;
-          colors_in[1] = colors_out[1] + (colors_in[1] * (255 - alpha) + 255 / 2) / 255;
-          colors_in[2] = colors_out[2] + (colors_in[2] * (255 - alpha) + 255 / 2) / 255;
-        }
-        ++pixels_begin;
-      });
-    }
-  }
-
-  /**
-   * @brief Blend an XFixes ARGB cursor into packed X11 RGB 10:10:10 pixels.
-   */
-  static void blend_cursor_native10(Display *display, img_t &img, int offsetX, int offsetY) {
-    xcursor_t cursor {x11::fix::GetCursorImage(display)};
-    if (!cursor) {
-      BOOST_LOG(error) << "Couldn't get cursor for native X11 10-bit capture"sv;
-      return;
-    }
-
-    const int cursor_x = static_cast<int>(cursor->x) - cursor->xhot - offsetX;
-    const int cursor_y = static_cast<int>(cursor->y) - cursor->yhot - offsetY;
-    const int first_x = std::max(0, cursor_x);
-    const int first_y = std::max(0, cursor_y);
-    const int end_x = std::min(img.width, cursor_x + static_cast<int>(cursor->width));
-    const int end_y = std::min(img.height, cursor_y + static_cast<int>(cursor->height));
-    if (first_x >= end_x || first_y >= end_y) {
-      return;
-    }
-
-    for (int y = first_y; y < end_y; ++y) {
-      auto *destination = reinterpret_cast<std::uint32_t *>(
-        img.data + static_cast<std::size_t>(y) * img.row_pitch);
-      const int cursor_row = y - cursor_y;
-      for (int x = first_x; x < end_x; ++x) {
-        const int cursor_column = x - cursor_x;
-        const std::uint32_t argb = static_cast<std::uint32_t>(
-          cursor->pixels[static_cast<std::size_t>(cursor_row) * cursor->width + cursor_column]);
-        const unsigned int alpha = argb >> 24U;
-        if (alpha == 0) {
-          continue;
-        }
-
-        const std::uint32_t background = destination[x];
-        const auto blend_channel = [alpha](unsigned int foreground,
-                                           unsigned int background_channel) {
-          const unsigned int foreground_10 = video::expand_8bit_to_10bit(
-            static_cast<std::uint8_t>(foreground));
-          return (foreground_10 * alpha +
-                  background_channel * (255U - alpha) + 127U) / 255U;
-        };
-        const unsigned int red = blend_channel((argb >> 16U) & 0xffU,
-                                                background & 0x3ffU);
-        const unsigned int green = blend_channel((argb >> 8U) & 0xffU,
-                                                  (background >> 10U) & 0x3ffU);
-        const unsigned int blue = blend_channel(argb & 0xffU,
-                                                 (background >> 20U) & 0x3ffU);
-        destination[x] = red | (green << 10U) | (blue << 20U);
-      }
-    }
-  }
 
   /**
    * @brief X11 display, window, and attribute handles for capture.
@@ -946,29 +873,6 @@ namespace platf {
     void refresh() {
       x11::GetWindowAttributes(xdisplay.get(), xwindow, &xattr);  // Update xattr's
     }
-
-    /**
-     * @brief Create AVCodec encode device.
-     *
-     * @param pix_fmt Sunshine pixel format to convert or allocate for.
-     * @return Constructed AVCodec encode device object.
-     */
-    std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override {
-#ifdef SUNSHINE_BUILD_VAAPI
-      if (mem_type == mem_type_e::vaapi) {
-        return va::make_avcodec_encode_device(width, height, false);
-      }
-#endif
-
-#ifdef SUNSHINE_BUILD_CUDA
-      if (mem_type == mem_type_e::cuda) {
-        return cuda::make_avcodec_encode_device(width, height, false);
-      }
-#endif
-
-      return std::make_unique<avcodec_encode_device_t>();
-    }
-
   };
 
   /**
@@ -980,6 +884,10 @@ namespace platf {
     }
 
     ~native10_attr_t() override {
+      video::log_frame_timing("native10_geometry_batch_wait", geometry_wait);
+      video::log_frame_timing("native10_xshm_reply_wait", image_wait);
+      video::log_frame_timing("native10_capture_total", capture_total);
+      video::log_frame_timing("native10_pool_acquire", pool_acquire);
       if (xdisplay && compositor_keepalive != 0) {
         x11::DestroyWindow(xdisplay.get(), compositor_keepalive);
         compositor_keepalive = 0;
@@ -1025,7 +933,16 @@ namespace platf {
       // unredirecting a fullscreen Flame surface. Without it the XComposite
       // overlay becomes black while final scanout continues through NvFBC.
       compositor_keepalive = x11::CreateSimpleWindow(
-        xdisplay.get(), xwindow, 0, 0, 2, 2, 0, 0, 0);
+        xdisplay.get(),
+        xwindow,
+        0,
+        0,
+        2,
+        2,
+        0,
+        0,
+        0
+      );
       if (compositor_keepalive == 0) {
         BOOST_LOG(error) << "Couldn't create native X11 compositor keepalive"sv;
         return -1;
@@ -1033,16 +950,38 @@ namespace platf {
       XSetWindowAttributes keepalive_attr {};
       keepalive_attr.override_redirect = True;
       x11::ChangeWindowAttributes(
-        xdisplay.get(), compositor_keepalive, CWOverrideRedirect, &keepalive_attr);
+        xdisplay.get(),
+        compositor_keepalive,
+        CWOverrideRedirect,
+        &keepalive_attr
+      );
       const Atom opacity_atom = x11::InternAtom(
-        xdisplay.get(), "_NET_WM_WINDOW_OPACITY", False);
+        xdisplay.get(),
+        "_NET_WM_WINDOW_OPACITY",
+        False
+      );
       const unsigned long opacity = 0;
       x11::ChangeProperty(
-        xdisplay.get(), compositor_keepalive, opacity_atom, XA_CARDINAL, 32,
-        PropModeReplace, reinterpret_cast<const unsigned char *>(&opacity), 1);
+        xdisplay.get(),
+        compositor_keepalive,
+        opacity_atom,
+        XA_CARDINAL,
+        32,
+        PropModeReplace,
+        reinterpret_cast<const unsigned char *>(&opacity),
+        1
+      );
       x11::shape::CombineRectangles(
-        xdisplay.get(), compositor_keepalive, ShapeInput, 0, 0,
-        nullptr, 0, ShapeSet, Unsorted);
+        xdisplay.get(),
+        compositor_keepalive,
+        ShapeInput,
+        0,
+        0,
+        nullptr,
+        0,
+        ShapeSet,
+        Unsorted
+      );
       x11::MapRaised(xdisplay.get(), compositor_keepalive);
       x11::Sync(xdisplay.get(), False);
 
@@ -1069,9 +1008,19 @@ namespace platf {
         xserver_gid = authority_stat.st_gid;
       }
       connection = std::make_shared<native10_connection_t>(
-        raw_connection, xserver_uid, xserver_gid);
+        raw_connection,
+        xserver_uid,
+        xserver_gid
+      );
+      if (!capture_geometry.subscribe(xcb::capture_api, raw_connection, static_cast<xcb_window_t>(xwindow), static_cast<xcb_window_t>(overlay_window))) {
+        BOOST_LOG(error) << "Could not subscribe native X11 capture geometry"sv;
+        return -1;
+      }
+      pin_upload = config.encoder_backend == "nvenc-direct";
       const auto *shm_extension = xcb::get_extension_data(
-        connection->connection.get(), xcb::shm_id);
+        connection->connection.get(),
+        xcb::shm_id
+      );
       if (!shm_extension || !shm_extension->present) {
         BOOST_LOG(error) << "Native X11 10-bit capture requires MIT-SHM"sv;
         connection.reset();
@@ -1088,9 +1037,7 @@ namespace platf {
       return 0;
     }
 
-    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb,
-                      const pull_free_image_cb_t &pull_free_image_cb,
-                      bool *cursor) override {
+    capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool * /* cursor */) override {
       auto next_frame = std::chrono::steady_clock::now();
       sleep_overshoot_logger.reset();
       while (true) {
@@ -1106,7 +1053,7 @@ namespace platf {
         }
 
         std::shared_ptr<platf::img_t> img_out;
-        const auto status = snapshot(pull_free_image_cb, img_out, *cursor);
+        const auto status = snapshot(pull_free_image_cb, img_out);
         switch (status) {
           case capture_e::reinit:
           case capture_e::error:
@@ -1130,20 +1077,15 @@ namespace platf {
       }
     }
 
-    capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb,
-                       std::shared_ptr<platf::img_t> &img_out,
-                       bool cursor) {
-      refresh();
-      XWindowAttributes current_overlay {};
-      if (xattr.width != env_width || xattr.height != env_height ||
-          !x11::GetWindowAttributes(xdisplay.get(), overlay_window, &current_overlay) ||
-          current_overlay.width != env_width || current_overlay.height != env_height ||
-          current_overlay.depth != 30) {
-        BOOST_LOG(warning) << "Native X11 capture topology changed; requesting reinitialization"sv;
-        return capture_e::reinit;
-      }
+    x11::capture_geometry_t capture_geometry;  ///< Event-backed root/overlay geometry validity.
+
+    capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, bool record_timing = true) {
+      const auto started = std::chrono::steady_clock::now();
       if (!pull_free_image_cb(img_out)) {
         return capture_e::interrupted;
+      }
+      if (record_timing) {
+        pool_acquire.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count());
       }
       auto *img = dynamic_cast<native10_img_t *>(img_out.get());
       if (!img || img->connection != connection) {
@@ -1151,29 +1093,32 @@ namespace platf {
         return capture_e::error;
       }
 
-      xcb_img_t reply;
       const auto frame_timestamp = std::chrono::steady_clock::now();
+      x11::capture_batch_result_t result;
       {
         std::lock_guard lock {connection->mutex};
-        const auto cookie = xcb::shm_get_image_unchecked(
-          connection->connection.get(), static_cast<xcb_drawable_t>(overlay_window),
-          offset_x, offset_y, width, height, ~0U, XCB_IMAGE_FORMAT_Z_PIXMAP,
-          img->segment, 0);
-        reply.reset(xcb::shm_get_image_reply(
-          connection->connection.get(), cookie, nullptr));
+        result = capture_geometry.snapshot(xcb::capture_api, connection->connection.get(), static_cast<xcb_window_t>(xwindow), static_cast<xcb_drawable_t>(overlay_window), offset_x, offset_y, width, height, env_width, env_height, img->segment);
       }
-      if (!reply || reply->depth != 30 || reply->size != frame_size()) {
-        BOOST_LOG(error) << "Native X11 XShmGetImage returned an invalid depth or size"sv;
+      if (!result.valid) {
+        BOOST_LOG(warning) << "Native X11 capture geometry, depth or SHM reply changed; requesting reinitialization"sv;
         return capture_e::reinit;
       }
       img->frame_timestamp = frame_timestamp;
-      if (cursor) {
-        blend_cursor_native10(xdisplay.get(), *img, offset_x, offset_y);
+      if (record_timing) {
+        geometry_wait.push_back(result.geometry_wait_us);
+        image_wait.push_back(result.image_wait_us);
+        capture_total.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count());
       }
       return capture_e::ok;
     }
 
+    /** @brief Keep acquired Native10 storage warm within a 256 MiB retention budget. */
+    std::size_t capture_pool_retention_count() const override {
+      return video::capture_image_pool_t<img_t>::retention_for_bytes(frame_size(), 256U * 1024U * 1024U);
+    }
+
     std::shared_ptr<img_t> alloc_img() override {
+      const auto started = std::chrono::steady_clock::now();
       if (!connection || !connection->connection) {
         return nullptr;
       }
@@ -1205,13 +1150,26 @@ namespace platf {
         return nullptr;
       }
       img->data = static_cast<std::uint8_t *>(img->mapping);
+      double registration_us = 0;
+      if (pin_upload) {
+        const auto registration_started = std::chrono::steady_clock::now();
+        img->upload_registration = cuda::register_host_memory(img->mapping, frame_size());
+        registration_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - registration_started).count();
+        img->capture_pool_preferred = static_cast<bool>(img->upload_registration);
+      }
       {
         std::lock_guard lock {connection->mutex};
         img->segment = xcb::generate_id(connection->connection.get());
         const auto attach_cookie = xcb::shm_attach_checked(
-          connection->connection.get(), img->segment, img->shm_id, false);
+          connection->connection.get(),
+          img->segment,
+          img->shm_id,
+          false
+        );
         xcb_generic_error_t *xcb_error = xcb::request_check(
-          connection->connection.get(), attach_cookie);
+          connection->connection.get(),
+          attach_cookie
+        );
         if (xcb_error) {
           BOOST_LOG(error) << "Native X11 SHM attach failed with X11 error "sv
                            << static_cast<unsigned int>(xcb_error->error_code);
@@ -1224,6 +1182,10 @@ namespace platf {
         return nullptr;
       }
       img->marked_for_removal = true;
+      BOOST_LOG(info) << "Native X11 SHM buffer: bytes="sv << frame_size()
+                      << " cuda_pinned="sv << static_cast<bool>(img->upload_registration)
+                      << " allocation_ms="sv << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()
+                      << " registration_ms="sv << registration_us / 1000.0;
       return img;
     }
 
@@ -1236,11 +1198,14 @@ namespace platf {
         return true;
       };
       std::shared_ptr<platf::img_t> img_out;
+      // The encoder initializes its dummy image concurrently with capture.
+      // Stage statistics are capture-thread-owned, not shared between threads.
       return snapshot(pull_dummy_img_callback, img_out, false) == capture_e::ok ? 0 : -1;
     }
 
     std::unique_ptr<avcodec_encode_device_t> make_avcodec_software_encode_device(
-        pix_fmt_e pix_fmt) override {
+      pix_fmt_e pix_fmt
+    ) override {
       if (pix_fmt != pix_fmt_e::yuv444p16) {
         BOOST_LOG(error) << "Native X11 10-bit capture currently supports only H.264 10-bit 4:4:4 identity"sv;
         return nullptr;
@@ -1249,7 +1214,8 @@ namespace platf {
     }
 
     std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(
-        pix_fmt_e pix_fmt) override {
+      pix_fmt_e pix_fmt
+    ) override {
       if (pix_fmt != pix_fmt_e::yuv444p16) {
         BOOST_LOG(error) << "Native X11 direct NVENC supports only 10-bit 4:4:4 identity"sv;
         return nullptr;
@@ -1262,6 +1228,11 @@ namespace platf {
              static_cast<std::uint32_t>(height) * 4U;
     }
 
+    video::timing_samples_t geometry_wait;  ///< Request dispatch and geometry-reply wait.
+    video::timing_samples_t image_wait;  ///< Remaining SHM reply wait.
+    video::timing_samples_t capture_total;  ///< Pool acquisition plus complete checked capture duration.
+    video::timing_samples_t pool_acquire;  ///< Reuse/allocation, trimming, and pool-backpressure wait.
+    bool pin_upload = false;  ///< Pin only the NVENC path; x264 stays in system memory.
     Window overlay_window {};  ///< Depth-30 XComposite overlay being captured.
     Window compositor_keepalive {};  ///< Transparent window preventing unredirect.
     XWindowAttributes overlay_attr {};  ///< Verified overlay geometry and format.
@@ -1277,7 +1248,7 @@ namespace platf {
    * @return X11 display backend, or nullptr when initialization fails.
    */
   std::shared_ptr<display_t> x11_display(platf::mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-    if (hwdevice_type != platf::mem_type_e::system && hwdevice_type != platf::mem_type_e::vaapi && hwdevice_type != platf::mem_type_e::cuda) {
+    if (hwdevice_type != platf::mem_type_e::system && hwdevice_type != platf::mem_type_e::cuda) {
       BOOST_LOG(error) << "Could not initialize x11 display with the given hw device type"sv;
       return nullptr;
     }
@@ -1383,10 +1354,9 @@ namespace platf {
       }
 
       int refresh_millihz = 0;
-      const auto mode = std::find_if(resources->modes, resources->modes + resources->nmode,
-                                     [crtc_mode = crtc->mode](const XRRModeInfo &candidate) {
-                                       return candidate.id == crtc_mode;
-                                     });
+      const auto mode = std::find_if(resources->modes, resources->modes + resources->nmode, [crtc_mode = crtc->mode](const XRRModeInfo &candidate) {
+        return candidate.id == crtc_mode;
+      });
       if (mode != resources->modes + resources->nmode && mode->hTotal && mode->vTotal) {
         auto vertical_total = static_cast<double>(mode->vTotal);
         if (mode->modeFlags & RR_DoubleScan) {
@@ -1459,7 +1429,7 @@ namespace platf {
       return cursor;
     }
 
-    bool cursor_t::capture(egl::cursor_t &img) {
+    bool cursor_t::capture(platf::cursor_image_t &img) {
       auto display = (xdisplay_t::pointer) ctx.get();
 
       if (img.desktop_width <= 0 || img.desktop_height <= 0) {
@@ -1503,7 +1473,9 @@ namespace platf {
         reinterpret_cast<const std::uint32_t *>(img.data),
         reinterpret_cast<const std::uint32_t *>(img.data) +
           static_cast<std::size_t>(img.width) * img.height,
-        [](const std::uint32_t pixel) { return (pixel & 0xFF000000U) != 0; }
+        [](const std::uint32_t pixel) {
+          return (pixel & 0xFF000000U) != 0;
+        }
       );
       return true;
     }
@@ -1540,8 +1512,16 @@ namespace platf {
       int window_y = 0;
       unsigned int mask = 0;
       if (!x11::QueryPointer(
-            display, DefaultRootWindow(display), &root_return, &child_return,
-            &root_x, &root_y, &window_x, &window_y, &mask)) {
+            display,
+            DefaultRootWindow(display),
+            &root_return,
+            &child_return,
+            &root_x,
+            &root_y,
+            &window_x,
+            &window_y,
+            &mask
+          )) {
         return false;
       }
 
@@ -1569,10 +1549,6 @@ namespace platf {
         }
       }
       return shape_changed ? 1 : 0;
-    }
-
-    void cursor_t::blend(img_t &img, int offsetX, int offsetY) {
-      blend_cursor((xdisplay_t::pointer) ctx.get(), img, offsetX, offsetY);
     }
 
     /**

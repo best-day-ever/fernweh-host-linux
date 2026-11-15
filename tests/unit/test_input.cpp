@@ -859,7 +859,7 @@ TEST_F(InputRetainedSessionTest, NativeKeyboardAndMalformedPayloadBoundaries) {
   EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, key.data(), key.size() - 1));
   EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_KEYBOARD, nullptr, key.size()));
   EXPECT_FALSE(input::native(session, 255, key.data(), key.size()));
-  std::array<std::uint8_t, UTF8_TEXT_EVENT_MAX_COUNT + 1> oversized {};
+  std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_UTF8_TEXT_MAX_SIZE + 1> oversized {};
   EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_UTF8_TEXT, oversized.data(), oversized.size()));
   std::array<std::uint8_t, PLANK_TRANSPORT_INPUT_PEN_SIZE> pen {};
   plank_transport_input_encode_pen(pen.data(), LI_TOUCH_EVENT_HOVER, LI_TOOL_TYPE_PEN, 0, 0, 0, std::numeric_limits<float>::quiet_NaN(), 0, 0, 0, 0);

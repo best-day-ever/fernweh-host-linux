@@ -15,6 +15,7 @@
 
 // local includes
 #include "cuda.h"
+#include "src/platform/capture_image.h"
 
 using namespace std::literals;
 
@@ -41,30 +42,6 @@ using namespace std::literals;
   check((x), SUNSHINE_STRINGVIEW(y ": "))
 
 using namespace std::literals;
-
-// Special declarations
-/**
- * NVCC tends to have problems with standard headers.
- * Don't include common.h, instead use bare minimum
- * of standard headers and duplicate declarations of necessary classes.
- * Not pretty and extremely error-prone, fix at earliest convenience.
- */
-namespace platf {
-  struct img_t: std::enable_shared_from_this<img_t> {
-  public:
-    std::uint8_t *data {};
-    std::int32_t width {};
-    std::int32_t height {};
-    std::int32_t pixel_pitch {};
-    std::int32_t row_pitch {};
-
-    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
-
-    virtual ~img_t() = default;
-  };
-}  // namespace platf
-
-// End special declarations
 
 namespace cuda {
 
@@ -891,6 +868,11 @@ namespace cuda {
   }
 
   #if defined(SUNSHINE_TESTS)
+  std::optional<std::int64_t> test_capture_image_timestamp(const platf::img_t &image) {
+    if (!image.frame_timestamp) return std::nullopt;
+    return image.frame_timestamp->time_since_epoch().count();
+  }
+
   bool test_identity_gbr_8bit_conversion() {
     constexpr int width = 4;
     constexpr int height = 1;

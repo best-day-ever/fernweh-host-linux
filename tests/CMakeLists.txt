@@ -67,33 +67,12 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
-# modify SUNSHINE_DEFINITIONS
-if (WIN32)
-    list(APPEND
-            SUNSHINE_DEFINITIONS SUNSHINE_SHADERS_DIR="${CMAKE_SOURCE_DIR}/src_assets/windows/assets/shaders/directx")
-elseif (NOT APPLE)
-    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_SHADERS_DIR="${CMAKE_SOURCE_DIR}/src_assets/linux/assets/shaders/opengl")
-endif ()
-
 set(TEST_DEFINITIONS)  # list will be appended as needed
 
 # this indicates we're building tests in case sunshine needs to adjust some code or add private tests
 list(APPEND TEST_DEFINITIONS SUNSHINE_TESTS)
 list(APPEND TEST_DEFINITIONS SUNSHINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 list(APPEND TEST_DEFINITIONS SUNSHINE_TEST_BIN_DIR="${CMAKE_CURRENT_BINARY_DIR}")
-
-# Override SUNSHINE_ASSETS_DIR to use a writable temp directory for tests
-# Remove the existing definition from SUNSHINE_DEFINITIONS to avoid redefinition error
-list(FILTER SUNSHINE_DEFINITIONS EXCLUDE REGEX "^SUNSHINE_ASSETS_DIR=")
-list(APPEND TEST_DEFINITIONS SUNSHINE_ASSETS_DIR="${CMAKE_CURRENT_BINARY_DIR}/test_assets")
-
-if(NOT WIN32)
-    find_package(Udev 255)  # we need 255+ for udevadm verify
-    message(STATUS "UDEV_FOUND: ${UDEV_FOUND}")
-    if(UDEV_FOUND)
-        list(APPEND TEST_DEFINITIONS UDEVADM_EXECUTABLE="${UDEVADM_EXECUTABLE}")
-    endif()
-endif()
 
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
         ${CMAKE_SOURCE_DIR}/tests/*.h
@@ -103,12 +82,6 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
 # in a disposable Linux container instead of the ordinary test executable.
 list(REMOVE_ITEM TEST_SOURCES
         ${CMAKE_SOURCE_DIR}/tests/collaboration/test_monitor.cpp)
-# Add macOS-specific test files only when building tests for macOS
-if (APPLE)
-    file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
-            ${CMAKE_SOURCE_DIR}/tests/*.mm)
-    list(APPEND TEST_SOURCES ${MACOS_TEST_SOURCES})
-endif ()
 
 set(SUNSHINE_SOURCES
         ${SUNSHINE_TARGET_FILES})
@@ -126,7 +99,6 @@ add_executable(${PROJECT_NAME}
 set(INTEGRATION_TEST_FILES
     "src/config.cpp"
     "docs/configuration.md"
-    "src_assets/linux/misc/60-sunshine.rules"
 )
 
 foreach(file ${INTEGRATION_TEST_FILES})
@@ -155,6 +127,11 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
+# Source properties are scoped to the defining CMake directory. The production
+# target's version definition does not reach nvhttp.cpp when tests compile it.
+# Keep the definition on its consumer instead of invalidating every test object.
+set_property(SOURCE "${CMAKE_SOURCE_DIR}/src/nvhttp.cpp" APPEND PROPERTY
+        COMPILE_DEFINITIONS PROJECT_VERSION="${CMAKE_PROJECT_VERSION}")
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})
 
@@ -172,19 +149,3 @@ if(PLANK_ENABLE_TRANSPORT)
     set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY LINK_DEPENDS
             "${PLANK_TRANSPORT_LIBRARY}")
 endif()
-
-if (WIN32)
-    # Prefer static libraries because the Windows package is linked statically.
-    set_target_properties(${PROJECT_NAME} PROPERTIES LINK_SEARCH_START_STATIC 1)
-
-    # Copy minhook-detours DLL to test binary directory for ARM64
-    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_MINHOOK_DLL}"
-                "${CMAKE_CURRENT_BINARY_DIR}"
-            COMMENT "Copying minhook-detours DLL to test binary directory"
-            VERBATIM
-        )
-    endif()
-endif ()

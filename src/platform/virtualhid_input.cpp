@@ -69,12 +69,7 @@ namespace platf::virtualhid {
         .pressed = !release,
       };
 
-#ifdef _WIN32
-      event.uses_normalized_key_code = (static_cast<std::byte>(flags) & static_cast<std::byte>(SS_KBE_FLAG_NON_NORMALIZED)) == std::byte {};
-      event.prefer_native_scan_code = config::input.always_send_scancodes;
-#else
       (void) flags;
-#endif
       return event;
     }
 
@@ -339,7 +334,6 @@ namespace platf::virtualhid {
 
 namespace platf {
 
-#ifndef _WIN32
   /**
    * @brief Global libvirtualhid devices shared by clients.
    */
@@ -385,7 +379,6 @@ namespace platf {
   virtualhid::client_context_t &virtualhid::get_client_context(client_input_t *input) {
     return static_cast<client_input_raw_t *>(input)->virtualhid;
   }
-#endif
 
   void move_mouse(input_t &input, int deltaX, int deltaY) {
     virtualhid::move_mouse(virtualhid::get_input_context(input), deltaX, deltaY);
