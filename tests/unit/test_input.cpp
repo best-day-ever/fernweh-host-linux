@@ -16,6 +16,7 @@
 
 extern "C" {
 #include <moonlight-common-c/src/plank.h>
+#include <moonlight-common-c/src/Input.h>
 #ifdef PLANK_TRANSPORT
   #include <plank_transport_input.h>
   #include <plank_transport_pointer.h>
@@ -370,8 +371,8 @@ TEST_F(InputRetainedSessionTest, EmptyDisconnectDoesNotSynthesizeButtonEvents) {
 TEST_F(InputRetainedSessionTest, DisconnectReleasesEachHeldMouseButtonOnce) {
   std::uint64_t connection_id = 0;
   auto session = allocate("held-buttons", connection_id);
-  // Exercise left, middle and right separately so each release is observable.
-  for (std::uint8_t button = 1; button <= 3; ++button) {
+  // Exercise every supported button, including both side buttons.
+  for (std::uint8_t button = 1; button <= BUTTON_X2; ++button) {
     SCOPED_TRACE(button);
     const auto before_press = mouse->submit_count();
     input::testing::handle_mouse_button(session, button, false);
@@ -798,6 +799,19 @@ TEST_F(InputRetainedSessionTest, DisconnectReleasesMappedKey) {
   config::input.keybindings = std::move(saved);
 }
 
+TEST_F(InputRetainedSessionTest, ReconnectDoesNotRetainTheOldModifierChord) {
+  std::uint64_t lease = 0;
+  auto session = allocate("modifier-reset", lease);
+  for (const auto key : {0xa0, 0xa2, 0xa4}) {
+    input::testing::handle_keyboard(session, key, false);
+  }
+  input::reset(session, lease);
+  auto resumed = allocate("modifier-reset", lease);
+  // Stale Ctrl+Alt+Shift bookkeeping would consume F1 as a Host shortcut.
+  input::testing::handle_keyboard(resumed, 0x70, false);
+  EXPECT_EQ(input::testing::last_keyboard_code(), 0x70);
+}
+
 #ifdef PLANK_TRANSPORT
 TEST_F(InputRetainedSessionTest, NativeButtonsAndSignedScrollReachThePlatformDirectly) {
   std::uint64_t lease = 0;
@@ -855,16 +869,3 @@ TEST_F(InputRetainedSessionTest, NativeKeyboardAndMalformedPayloadBoundaries) {
   EXPECT_FALSE(input::native(session, PLANK_TRANSPORT_INPUT_PEN, pen.data(), pen.size()));
 }
 #endif
-
-TEST_F(InputRetainedSessionTest, ReconnectDoesNotRetainTheOldModifierChord) {
-  std::uint64_t lease = 0;
-  auto session = allocate("modifier-reset", lease);
-  for (const auto key : {0xa0, 0xa2, 0xa4}) {
-    input::testing::handle_keyboard(session, key, false);
-  }
-  input::reset(session, lease);
-  auto resumed = allocate("modifier-reset", lease);
-  // Stale Ctrl+Alt+Shift bookkeeping would consume F1 as a Host shortcut.
-  input::testing::handle_keyboard(resumed, 0x70, false);
-  EXPECT_EQ(input::testing::last_keyboard_code(), 0x70);
-}

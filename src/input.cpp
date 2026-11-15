@@ -1582,6 +1582,9 @@ namespace input {
             plank_transport_input_read_u32(payload + 28) != 0) {
           return false;
         }
+        for (std::size_t offset = 8; offset <= 24; offset += sizeof(float)) {
+          if (!std::isfinite(plank_transport_input_read_float(payload + offset))) return false;
+        }
         SS_PEN_PACKET packet {};
         packet.eventType = payload[0];
         packet.toolType = payload[1];
@@ -1634,7 +1637,7 @@ namespace input {
   void reset_keyboard_keys() {
     for (auto &[key, pressed] : key_press) {
       if (pressed) {
-        platf::keyboard_update(platf_input, vk_from_kpid(key) & 0x00FF, true, flags_from_kpid(key));
+        platf::keyboard_update(platf_input, map_keycode(vk_from_kpid(key) & 0x00FF), true, flags_from_kpid(key));
         pressed = false;
       }
     }
@@ -1670,9 +1673,12 @@ namespace input {
       if (held) {
         held = false;
         auto &owners = key_press[key];
-        if (owners > 0 && --owners == 0) platf::keyboard_update(platf_input, vk_from_kpid(key) & 0x00FF, true, flags_from_kpid(key));
+        if (owners > 0 && --owners == 0) platf::keyboard_update(platf_input, map_keycode(vk_from_kpid(key) & 0x00FF), true, flags_from_kpid(key));
       }
     }
+    input->held_keys.clear();
+    input->accumulated_vscroll_delta = 0;
+    input->accumulated_hscroll_delta = 0;
     input->shortcutFlags = 0; input->left_alt_pressed = false; input->right_alt_pressed = false;
     platf::pen_input_t pen {};
     pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
