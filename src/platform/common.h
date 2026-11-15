@@ -17,6 +17,7 @@
 #include <boost/core/noncopyable.hpp>
 
 // local includes
+#include "capture_image.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/thread_safe.h"
@@ -210,33 +211,6 @@ namespace platf {
      * @brief Destroy the deinitializer.
      */
     virtual ~deinit_t() = default;
-  };
-
-  /**
-   * @brief Captured frame buffer shared between capture and encode stages.
-   */
-  struct img_t: std::enable_shared_from_this<img_t> {
-  public:
-    img_t() = default;
-
-    img_t(img_t &&) = delete;
-    img_t(const img_t &) = delete;
-    img_t &operator=(img_t &&) = delete;
-    img_t &operator=(const img_t &) = delete;
-
-    std::uint8_t *data {};  ///< Pointer to the captured image buffer.
-    std::int32_t width {};  ///< Image width in pixels.
-    std::int32_t height {};  ///< Image height in pixels.
-    std::int32_t pixel_pitch {};  ///< Bytes per pixel in the image buffer.
-    std::int32_t row_pitch {};  ///< Bytes between consecutive image rows.
-    bool capture_pool_preferred {false};  ///< Immutable hint to preserve costly registered buffers during idle trimming.
-
-    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Capture timestamp associated with the frame.
-
-    /**
-     * @brief Destroy the image.
-     */
-    virtual ~img_t() = default;
   };
 
   /**

@@ -127,6 +127,11 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
 target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
+# Source properties are scoped to the defining CMake directory. The production
+# target's version definition does not reach nvhttp.cpp when tests compile it.
+# Keep the definition on its consumer instead of invalidating every test object.
+set_property(SOURCE "${CMAKE_SOURCE_DIR}/src/nvhttp.cpp" APPEND PROPERTY
+        COMPILE_DEFINITIONS PROJECT_VERSION="${CMAKE_PROJECT_VERSION}")
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
 target_link_options(${PROJECT_NAME} PRIVATE ${SUNSHINE_LINK_OPTIONS})
 

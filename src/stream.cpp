@@ -1022,11 +1022,6 @@ namespace stream {
           }
 #endif
 
-          auto &hdr_queue = session->control.hdr_queue;
-          while (hdr_queue->peek()) {
-            send_hdr_mode(session, hdr_queue->pop());
-          }
-
           auto &raw_hid_feedback_queue = session->control.raw_hid_feedback_queue;
           auto &raw_hid_pending = session->control.raw_hid_pending;
           const auto raw_hid_result = raw_hid::drain_feedback(raw_hid_feedback_queue, raw_hid_pending, [&](const auto &frame) {

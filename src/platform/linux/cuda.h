@@ -55,6 +55,22 @@ namespace cuda {
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
   std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_native10_encode_device(int width, int height, platf::pix_fmt_e pix_fmt);
 
+  /** @brief Initialize the CUDA driver bindings used by NvFBC capture. */
+  int init();
+
+  #if defined(SUNSHINE_TESTS)
+  /** @brief Read frame metadata through the CUDA translation unit without opening a device. */
+  std::optional<std::int64_t> test_capture_image_timestamp(const platf::img_t &image);
+  /** @brief Validate exact 8-bit identity-GBR conversion on the CUDA device. */
+  bool test_identity_gbr_8bit_conversion();
+  /** @brief Validate exact 10-bit identity-GBR conversion on the CUDA device. */
+  bool test_identity_gbr_10bit_conversion();
+  /** @brief Validate limited-range BT.709 NV12 conversion on the CUDA device. */
+  bool test_bt709_limited_nv12_conversion();
+  /** @brief Validate limited-range BT.709 P010 conversion on the CUDA device. */
+  bool test_bt709_limited_p010_conversion();
+  #endif
+
 }  // namespace cuda
 
 typedef struct cudaArray *cudaArray_t;
@@ -105,6 +121,20 @@ namespace cuda {
     ~tex_t();
 
     int copy(std::uint8_t *src, int height, int pitch);
+
+    /**
+     * @brief Copy a BGRA source rectangle into the packed-capture texture.
+     *
+     * Offsets and dimensions are pixels; the source row pitch is bytes.
+     */
+    int copy_rect(const std::uint8_t *src, int src_pitch, int src_x, int src_y, int width, int height,
+                  int dst_x, int dst_y);
+
+    /** @brief Fill the texture with transparent black for packed-capture gaps. */
+    int clear(int height, int pitch);
+
+    /** @brief Copy captured BGRA pixels to the capture probe's host buffer. */
+    int download(std::uint8_t *dst, int height, int pitch);
 
     cudaArray_t array;
 
