@@ -28,6 +28,7 @@ extern "C" {
 #include "cuda_primary_context.h"
 #include "cuda_stream_work.h"
 #include "nvfbc_frame_gate.h"
+#include "nvfbc_frame_geometry.h"
 #include "nvfbc_capture_retry.h"
 #include "cuda_host_registration.h"
 #include "misc.h"
@@ -1486,6 +1487,17 @@ namespace cuda {
           return platf::capture_e::error;
         }
 
+        const int frame_width = capture_regions.empty() ? width : env_width;
+        const int frame_height = capture_regions.empty() ? height : env_height;
+        if (!::nvfbc::frame_matches_bgra(info.dwWidth, info.dwHeight, info.dwByteSize,
+                                       frame_width, frame_height)) {
+          BOOST_LOG(warning) << "NvFBC frame geometry changed: expected "sv
+                             << frame_width << 'x' << frame_height << ", received "sv
+                             << info.dwWidth << 'x' << info.dwHeight << " ("sv
+                             << info.dwByteSize << " bytes); reinitializing capture"sv;
+          return platf::capture_e::reinit;
+        }
+
         // NOWAIT may return the previous frame. Keep polling for real changes,
         // but leave static refresh to the encoder's minimum-FPS cadence.
         if (!frame_gate.publish(info.bIsNewFrame)) {
@@ -1519,11 +1531,6 @@ namespace cuda {
         }
 
         if (!capture_regions.empty()) {
-          if (info.dwWidth != static_cast<std::uint32_t>(env_width) ||
-              info.dwHeight != static_cast<std::uint32_t>(env_height)) {
-            BOOST_LOG(warning) << "The X screen changed during packed capture; reinitializing"sv;
-            return platf::capture_e::reinit;
-          }
           // Same context and the same copy as the unpacked path, once per output.
           const int frame_pitch = static_cast<int>(info.dwWidth) * img->pixel_pitch;
           for (const auto &region : capture_regions) {
