@@ -2476,6 +2476,12 @@ int main(int argc, char **argv) {
         }
 
         if (arrangement_startup && inventory_session_id != selected->id) {
+          if (!inventory_session_id.empty()) {
+            // Pending and failed transitions belong to the previous worker's
+            // X server, even when the same account reconnects.
+            pending_display_request.reset();
+            clear_transition();
+          }
           // Record the display inventory of every new X server before its
           // worker starts; the worker builds display_capabilities from it.
           const bool published = plank::display::publish_session_inventory(
@@ -2518,58 +2524,16 @@ int main(int argc, char **argv) {
           }
         }
 
-        if (arrangement_lease && arrangement_lease->session_id != selected->id) {
-          // Carry into a fresh user X server with its own original snapshot.
-          apply_report_t applied {"session_ended"};
-          auto carried = *arrangement_lease;
-          if (selected->session_class == "user" && selected->uid == carried.uid &&
-              inventory && inventory_session_id == selected->id) {
-            applied = apply_arrangement_lease(carried, *selected, *environment, *inventory, nullptr);
-            if (applied.reason.empty()) {
-              carried.active = false;
-              carried.deadline = std::chrono::steady_clock::now() + std::chrono::seconds {30};
-              std::clog << "Carried the PLANK display arrangement into user session " << selected->id << '\n';
-            }
-          }
-          if (applied.effect == plank::display::display_change_effect_t::unchanged) {
-            // No new-server record was written. Only the old server's state
-            // is discarded; never clear a failed new-server rollback record.
-            clear_runtime_display_state();
-            arrangement_lease.reset();
-          } else {
-            plank::display::reconcile_display_change(
-              arrangement_lease, std::move(carried), applied.effect, std::chrono::steady_clock::now());
-          }
-          if (!applied.reason.empty()) {
-            std::clog << "PLANK display arrangement carry failed (" << applied.reason << ")"
-                      << (arrangement_lease ? "; recovery remains owned\n" : "; no live lease remains\n");
-          }
-        }
-
-        if (physical_display_lease &&
-            physical_display_lease->session_id != selected->id) {
-          if (selected->session_class == "user" &&
-              selected->uid == physical_display_lease->uid) {
-            if (!apply_physical_lease(
-                  *physical_display_lease, *selected, *environment
-                )) {
-              clear_runtime_display_state();
-              physical_display_lease.reset();
-              std::cerr << "Unable to carry the temporary display lease from GDM into the authenticated desktop\n";
-            } else {
-              // A greeter stream must not keep the user's new X server leased
-              // indefinitely when the desktop worker never gets a connection.
-              physical_display_lease->active = false;
-              physical_display_lease->deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds {30};
-              std::clog << "Carried the temporary PLANK display lease into user session "
-                        << selected->id << '\n';
-            }
-          } else {
-            clear_runtime_display_state();
-            physical_display_lease.reset();
-            std::clog << "Discarded the temporary display lease after its X server ended\n";
-          }
+        // Scope temporary layouts to the X server that owns their rollback
+        // snapshot. The replacement worker can admit the viewer before an
+        // authenticated launch requests a layout on the new X server.
+        const bool old_arrangement = arrangement_lease && arrangement_lease->session_id != selected->id;
+        const bool old_physical_lease = physical_display_lease && physical_display_lease->session_id != selected->id;
+        if (old_arrangement || old_physical_lease) {
+          if (old_arrangement) arrangement_lease.reset();
+          if (old_physical_lease) physical_display_lease.reset();
+          clear_runtime_display_state();
+          std::clog << "Released the previous X session's PLANK display lease before starting the new worker\n";
         }
 
         const auto complete_environment = add_audio_environment(*environment, *account);
