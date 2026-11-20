@@ -54,6 +54,30 @@ namespace plank::session {
     std::mutex supervisor_descriptor_mutex;
     int supervisor_descriptor {-1};
 
+    using display_action_t = display_request_t::action_t;
+    constexpr std::array display_actions {
+      std::pair {display_action_t::acquire, std::string_view {"acquire"}},
+      std::pair {display_action_t::activate, std::string_view {"activate"}},
+      std::pair {display_action_t::release, std::string_view {"release"}},
+      std::pair {display_action_t::await_reconnect, std::string_view {"await-reconnect"}},
+    };
+
+    /** @brief Use the same private control action names for both request formats. */
+    std::string_view display_action_name(display_action_t action) {
+      for (const auto &[value, name] : display_actions) {
+        if (value == action) return name;
+      }
+      return {};
+    }
+
+    /** @brief Reject unknown supervisor control actions before handling a request. */
+    std::optional<display_action_t> parse_display_action(std::string_view action) {
+      for (const auto &[value, name] : display_actions) {
+        if (name == action) return value;
+      }
+      return std::nullopt;
+    }
+
     std::optional<std::string> session_string(
       int (*getter)(const char *, char **),
       std::string_view session_id
@@ -466,10 +490,7 @@ namespace plank::session {
 
   std::string display_request_message(const display_request_t &request) {
     if (!request.arrangement.empty()) return display_arrangement_request_message(request);
-    const std::string_view action =
-      request.action == display_request_t::action_t::acquire ? "acquire" :
-      request.action == display_request_t::action_t::activate ? "activate" :
-                                                               "release";
+    const auto action = display_action_name(request.action);
     const bool acquire_valid = request.action != display_request_t::action_t::acquire ||
       ((request.layout == "single" || request.layout == "dual-horizontal") &&
        plank::topology::valid_virtual_layout_modes(
@@ -478,7 +499,7 @@ namespace plank::session {
     const bool control_valid = request.action == display_request_t::action_t::acquire ||
       (request.layout.empty() && request.mode_1.empty() && request.mode_2.empty() &&
        request.primary_output == -1);
-    if (!acquire_valid || !control_valid || request.account_uid == 0) {
+    if (action.empty() || !acquire_valid || !control_valid || request.account_uid == 0) {
       return {};
     }
     const auto account_uid = std::to_string(request.account_uid);
@@ -497,14 +518,11 @@ namespace plank::session {
   }
 
   std::string display_arrangement_request_message(const display_request_t &request) {
-    const std::string_view action =
-      request.action == display_request_t::action_t::acquire ? "acquire" :
-      request.action == display_request_t::action_t::activate ? "activate" :
-                                                               "release";
+    const auto action = display_action_name(request.action);
     const bool acquire = request.action == display_request_t::action_t::acquire;
     const auto parsed = acquire ? plank::arrangement::parse(request.arrangement) :
                                   plank::arrangement::parse_result_t {};
-    if (request.account_uid == 0 || request.primary_output != -1 || !request.layout.empty() || !request.mode_1.empty() ||
+    if (action.empty() || request.account_uid == 0 || request.primary_output != -1 || !request.layout.empty() || !request.mode_1.empty() ||
         !request.mode_2.empty() || (acquire && !parsed.request) ||
         (!acquire && !request.arrangement.empty())) {
       return {};
@@ -530,16 +548,15 @@ namespace plank::session {
       fields.emplace_back(message.substr(offset, end - offset));
       offset = end + 1;
     }
-    if (message.size() > maximum_update_size) return std::nullopt;
+    if (message.size() > maximum_update_size || fields.size() < 2) return std::nullopt;
+    const auto action = parse_display_action(fields[1]);
+    if (!action) return std::nullopt;
     if (fields.size() == 4 && fields.front() == arrangement_request_prefix) {
       const auto account_uid = parse_integer<unsigned long long>(fields[2]);
       if (!account_uid || *account_uid == 0 ||
           *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
       display_request_t request;
-      if (fields[1] == "acquire") request.action = display_request_t::action_t::acquire;
-      else if (fields[1] == "activate") request.action = display_request_t::action_t::activate;
-      else if (fields[1] == "release") request.action = display_request_t::action_t::release;
-      else return std::nullopt;
+      request.action = *action;
       request.account_uid = static_cast<uid_t>(*account_uid);
       request.arrangement = std::string {fields[3]};
       return display_arrangement_request_message(request) == message ?
@@ -550,14 +567,8 @@ namespace plank::session {
     if (!account_uid || *account_uid == 0 ||
         *account_uid > std::numeric_limits<uid_t>::max()) return std::nullopt;
     if (fields[6] != "-1" && fields[6] != "0" && fields[6] != "1") return std::nullopt;
-    const auto action = fields[1] == "acquire" ? display_request_t::action_t::acquire :
-      fields[1] == "activate" ? display_request_t::action_t::activate :
-      fields[1] == "release" ? display_request_t::action_t::release :
-                                display_request_t::action_t {};
-    if (fields[1] != "acquire" && fields[1] != "activate" &&
-        fields[1] != "release") return std::nullopt;
     display_request_t request {
-      action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
+      *action, std::string {fields[2]}, std::string {fields[3]}, std::string {fields[4]},
       static_cast<uid_t>(*account_uid), fields[6] == "-1" ? -1 : fields[6] == "0" ? 0 : 1
     };
     return display_request_message(request).empty() ?
@@ -975,6 +986,12 @@ namespace plank::session {
   display_request_status release_display_lease(uid_t account_uid) {
     return request_display_transition({
       display_request_t::action_t::release, {}, {}, {}, account_uid
+    });
+  }
+
+  display_request_status await_display_reconnect(uid_t account_uid) {
+    return request_display_transition({
+      display_request_t::action_t::await_reconnect, {}, {}, {}, account_uid
     });
   }
 

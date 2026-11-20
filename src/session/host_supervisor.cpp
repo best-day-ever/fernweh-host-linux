@@ -2681,19 +2681,31 @@ int main(int argc, char **argv) {
         } else if (request->action ==
                      plank::session::display_request_t::action_t::activate) {
           if (physical_display_lease &&
-              physical_display_lease->uid == request->account_uid) {
+              physical_display_lease->uid == request->account_uid &&
+              physical_display_lease->session_id == active->id) {
             physical_display_lease->active = true;
             physical_display_lease->deadline =
               std::chrono::steady_clock::time_point::max();
             std::clog << "Temporary PLANK display lease is active\n";
           }
-          if (arrangement_lease && arrangement_lease->uid == request->account_uid) {
+          if (arrangement_lease && arrangement_lease->uid == request->account_uid &&
+              arrangement_lease->session_id == active->id) {
             arrangement_lease->active = true;
             arrangement_lease->deadline = std::chrono::steady_clock::time_point::max();
             std::clog << "PLANK display arrangement lease is active\n";
           }
-        } else if (request->action ==
-                     plank::session::display_request_t::action_t::release) {
+        } else if (request->action == plank::session::display_request_t::action_t::await_reconnect &&
+                   active->session_class == "user") {
+          const auto now = std::chrono::steady_clock::now();
+          const bool physical = plank::display::retain_display_after_peer_loss(
+            physical_display_lease, request->account_uid, active->id, now);
+          const bool arrangement = plank::display::retain_display_after_peer_loss(
+            arrangement_lease, request->account_uid, active->id, now);
+          if (physical || arrangement) {
+            std::clog << "Retaining the PLANK display layout for same-desktop reconnect\n";
+          }
+        } else if (request->action == plank::session::display_request_t::action_t::release ||
+                   request->action == plank::session::display_request_t::action_t::await_reconnect) {
           if (physical_display_lease &&
               physical_display_lease->uid == request->account_uid) {
             const auto environment = active->id == physical_display_lease->session_id ?
@@ -2739,18 +2751,13 @@ int main(int argc, char **argv) {
           const bool delegate_exited = !worker_exited && worker.pam_delegate_pid > 0 &&
             waitpid(worker.pam_delegate_pid, nullptr, WNOHANG) == worker.pam_delegate_pid;
           if (worker_exited || delegate_exited) {
-            if (physical_display_lease && physical_display_lease->active &&
-                physical_display_lease->session_id == worker.session_id) {
-              physical_display_lease->active = false;
-              physical_display_lease->deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds {30};
+            const auto now = std::chrono::steady_clock::now();
+            if (physical_display_lease && plank::display::retain_display_after_peer_loss(
+                  physical_display_lease, physical_display_lease->uid, worker.session_id, now)) {
               std::cerr << "PLANK worker exited with an active display lease; allowing 30 seconds for recovery\n";
             }
-            if (arrangement_lease && arrangement_lease->active &&
-                arrangement_lease->session_id == worker.session_id) {
-              arrangement_lease->active = false;
-              arrangement_lease->deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds {30};
+            if (arrangement_lease && plank::display::retain_display_after_peer_loss(
+                  arrangement_lease, arrangement_lease->uid, worker.session_id, now)) {
               std::cerr << "PLANK worker exited with an active display arrangement; allowing 30 seconds for recovery\n";
             }
             if (delegate_exited) {

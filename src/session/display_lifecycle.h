@@ -5,11 +5,15 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace plank::display {
+  constexpr auto display_reconnect_grace = std::chrono::seconds {30};  ///< Maximum retained layout after media loss.
+
   /** The side effect a completed display transaction actually achieved. */
   enum class display_change_effect_t {
     unchanged,  ///< No replacement snapshot or display mutation occurred.
@@ -50,6 +54,23 @@ namespace plank::display {
   void retry_display_recovery(Lease &lease, std::chrono::steady_clock::time_point now) {
     lease.active = false;
     lease.deadline = now + std::chrono::seconds {30};
+  }
+
+  /**
+   * @brief Retain an active display snapshot only for the same account and X server.
+   * @param lease Supervisor-owned display lease, if present.
+   * @param uid Account of the current, authenticated desktop.
+   * @param session_id Current active user session ID.
+   * @param now Monotonic time when the transport loss was processed.
+   * @return True if the active lease entered its bounded reconnect window.
+   */
+  template<class Lease>
+  bool retain_display_after_peer_loss(std::optional<Lease> &lease, std::uint64_t uid,
+                                     std::string_view session_id, std::chrono::steady_clock::time_point now) {
+    if (!lease || !lease->active || lease->uid != uid || lease->session_id != session_id) return false;
+    lease->active = false;
+    lease->deadline = now + display_reconnect_grace;
+    return true;
   }
 
   /**

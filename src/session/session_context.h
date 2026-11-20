@@ -59,6 +59,7 @@ namespace plank::session {
       acquire,
       activate,
       release,
+      await_reconnect,
     } action {action_t::acquire};
     std::string layout;
     std::string mode_1;
@@ -263,6 +264,9 @@ namespace plank::session {
 
   /** Release a temporary physical-display lease when its final stream ends. */
   display_request_status release_display_lease(uid_t account_uid);
+
+  /** Let the supervisor keep the active desktop's temporary layout briefly after peer loss. */
+  display_request_status await_display_reconnect(uid_t account_uid);
 
   /** Outcome of a desktop lock request. */
   enum class lock_status {

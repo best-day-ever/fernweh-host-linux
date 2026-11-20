@@ -159,6 +159,7 @@ namespace stream {
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
 
     std::atomic_bool negotiated {};  ///< The native setup response precedes every asynchronous event.
+    std::atomic_bool intentional_disconnect {};  ///< Explicit Client disconnect or Host termination.
     int last_collaboration_permission {-1};  ///< Last reliable effective permission delivered to this guest.
     std::atomic<session::state_e> state;  ///< Current lifecycle state observed by stream workers.
   };
@@ -868,6 +869,7 @@ namespace stream {
           if (control.payload_size != 0) {
             BOOST_LOG(error) << "Rejected malformed PlankTransport disconnect"sv;
           } else {
+            session->intentional_disconnect.store(true, std::memory_order_relaxed);
             BOOST_LOG(info) << "PlankTransport client requested a clean disconnect"sv;
           }
           session::stop(*session);
@@ -1474,7 +1476,7 @@ namespace stream {
     std::atomic_uint owner_sessions;  ///< Owner streams only; guests never postpone owner-disconnect locking.
     std::mutex display_cleanup_mutex;  ///< Serializes shared display lease cleanup.
     std::optional<uid_t> display_lease_owner;  ///< Retain lease owner until the final stream drains.
-    bool owner_in_group {};  ///< Whether any primary owner stream configured this stream group.
+    bool display_lease_reconnect {};  ///< Preserve only the controlling stream's peer-loss decision.
     /// Delay before lock_on_disconnect locks the desktop, absorbing reconnects and takeovers.
     constexpr std::chrono::milliseconds lock_on_disconnect_grace {5000};
 
@@ -1509,6 +1511,7 @@ namespace stream {
     }
 
     void stop(session_t &session, const std::uint32_t termination_reason) {
+      session.intentional_disconnect.store(true, std::memory_order_relaxed);
       stop(session);
 #ifdef PLANK_TRANSPORT
       if (send_host_termination(&session, termination_reason) != 0) {
@@ -1607,11 +1610,18 @@ namespace stream {
         }
       }
 
+      bool retain_layout = false;
 #ifdef PLANK_TRANSPORT
       if (session.plank_transport_endpoint) {
         PlankTransportNativeStats stats {};
         stats.struct_size = sizeof(stats);
         auto *endpoint = static_cast<PlankTransportNativeEndpoint *>(session.plank_transport_endpoint.get());
+        const auto transport_state = plank_transport_native_endpoint_state(endpoint);
+        retain_layout = session.negotiated.load(std::memory_order_acquire) &&
+          !session.intentional_disconnect.load(std::memory_order_relaxed) &&
+          (transport_state == PLANK_TRANSPORT_STATE_STOPPING ||
+           transport_state == PLANK_TRANSPORT_STATE_STOPPED ||
+           transport_state == PLANK_TRANSPORT_STATE_FAILED);
         std::array<char, 1024> endpoint_error {};
         const auto endpoint_error_size = plank_transport_native_endpoint_last_error(
           endpoint,
@@ -1640,14 +1650,23 @@ namespace stream {
       }
 #endif
 
-      // If this is the last session, invoke the platform callbacks
+      // A guest can outlive the controlling stream while its queues drain.
+      // Only the controlling stream decides what happens to the display lease.
+      std::lock_guard cleanup_lock {display_cleanup_mutex};
+      if (!session.collaboration && session.plank_display_lease &&
+          display_lease_owner == session.plank_display_lease_uid) {
+        display_lease_reconnect = retain_layout;
+      }
       if (--running_sessions == 0) {
         platf::streaming_will_stop();
         if (display_lease_owner) {
-          const auto released = plank::session::release_display_lease(*display_lease_owner);
+          const auto updated = display_lease_reconnect ?
+            plank::session::await_display_reconnect(*display_lease_owner) :
+            plank::session::release_display_lease(*display_lease_owner);
           display_lease_owner.reset();
-          if (released != plank::session::display_request_status::submitted) {
-            BOOST_LOG(error) << "Unable to submit the temporary PLANK display-lease release"sv;
+          display_lease_reconnect = false;
+          if (updated != plank::session::display_request_status::submitted) {
+            BOOST_LOG(error) << "Unable to update the temporary PLANK display lease after disconnect"sv;
           }
         }
       }
@@ -1697,11 +1716,17 @@ namespace stream {
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
+      std::lock_guard cleanup_lock {display_cleanup_mutex};
       if (!session.collaboration) {
         ++owner_sessions;
-        std::lock_guard cleanup_lock {display_cleanup_mutex};
-        owner_in_group = true;
-        if (session.plank_display_lease) display_lease_owner = session.plank_display_lease_uid;
+        display_lease_reconnect = false;
+        if (session.plank_display_lease) {
+          display_lease_owner = session.plank_display_lease_uid;
+          if (plank::session::activate_display_lease(*display_lease_owner) !=
+              plank::session::display_request_status::submitted) {
+            BOOST_LOG(error) << "Unable to activate the temporary PLANK display lease"sv;
+          }
+        }
       }
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
@@ -1731,13 +1756,6 @@ namespace stream {
       session->plank_transport_endpoint = launch_session.plank_transport_endpoint;
       session->plank_feature_flags = launch_session.plank_feature_flags;
       session->file_clipboard_mode = launch_session.file_clipboard_mode;
-
-      if (session->plank_display_lease &&
-          plank::session::activate_display_lease(
-            session->plank_display_lease_uid
-          ) != plank::session::display_request_status::submitted) {
-        BOOST_LOG(error) << "Unable to activate the temporary PLANK display lease"sv;
-      }
 
       session->config = config;
 

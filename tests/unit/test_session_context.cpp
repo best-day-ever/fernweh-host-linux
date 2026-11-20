@@ -149,6 +149,7 @@ TEST(SessionContext, RoundTripsBoundedDisplayRequests) {
   for (const auto action : {
          session::display_request_t::action_t::activate,
          session::display_request_t::action_t::release,
+         session::display_request_t::action_t::await_reconnect,
        }) {
     const session::display_request_t control {action, {}, {}, {}, 1000};
     const auto parsed = session::parse_display_request(
@@ -295,6 +296,7 @@ TEST(SessionContext, RoundTripsArrangementRequests) {
   for (const auto action : {
          session::display_request_t::action_t::activate,
          session::display_request_t::action_t::release,
+         session::display_request_t::action_t::await_reconnect,
        }) {
     session::display_request_t control;
     control.action = action;

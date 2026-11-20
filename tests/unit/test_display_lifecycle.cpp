@@ -14,6 +14,14 @@ namespace {
   using steady_clock_t = std::chrono::steady_clock;
   const auto now = steady_clock_t::time_point {std::chrono::seconds {100}};
 
+  struct reconnect_lease_t {
+    unsigned uid;
+    std::string session_id;
+    std::string snapshot;
+    bool active;
+    steady_clock_t::time_point deadline;
+  };
+
   struct lease_t {
     std::string owner;
     std::string session;
@@ -30,6 +38,22 @@ namespace {
   lease_t attempted() {
     return {"owner", "new-server", "new-server-original", false, now};
   }
+}
+
+TEST(DisplayLifecycle, PeerLossRetainsOnlyAnActiveLayoutForTheSameDesktopAndAccount) {
+  std::optional<reconnect_lease_t> owned;
+  EXPECT_FALSE(display::retain_display_after_peer_loss(owned, 1000, "desktop", now));
+  owned = reconnect_lease_t {1000, "desktop", "original-layout", true, steady_clock_t::time_point::max()};
+  EXPECT_FALSE(display::retain_display_after_peer_loss(owned, 1001, "desktop", now));
+  EXPECT_FALSE(display::retain_display_after_peer_loss(owned, 1000, "other-desktop", now));
+  EXPECT_TRUE(owned->active);
+
+  ASSERT_TRUE(display::retain_display_after_peer_loss(owned, 1000, "desktop", now));
+  EXPECT_FALSE(owned->active);
+  EXPECT_EQ(owned->snapshot, "original-layout");
+  EXPECT_EQ(owned->deadline, now + std::chrono::seconds {30});
+  EXPECT_FALSE(display::retain_display_after_peer_loss(owned, 1000, "desktop", now + std::chrono::seconds {10}));
+  EXPECT_EQ(owned->deadline, now + std::chrono::seconds {30});
 }
 
 TEST(DisplayLifecycle, FailedRecordCannotMutateOrRestoreAnExistingLease) {
