@@ -27,6 +27,7 @@ extern "C" {
 #include "cuda.h"
 #include "cuda_primary_context.h"
 #include "cuda_stream_work.h"
+#include "nvfbc_capture_timing.h"
 #include "nvfbc_frame_gate.h"
 #include "nvfbc_frame_geometry.h"
 #include "nvfbc_capture_retry.h"
@@ -1329,8 +1330,20 @@ namespace cuda {
 
         sleep_overshoot_logger.reset();
 
+        ::nvfbc::capture_timing_t timing;
+        auto log_cadence = util::fail_guard([&]() {
+          if (timing.poll_lateness_us.size() >= 60) {
+            BOOST_LOG(info) << "PLANK NvFBC grabs: fresh="sv << timing.fresh_grabs
+                            << " repeated="sv << timing.repeated_grabs
+                            << " driver_reported_missed_frames="sv << timing.driver_reported_missed_frames;
+            ::video::log_frame_timing("nvfbc_poll_lateness", timing.poll_lateness_us);
+            ::video::log_frame_timing("nvfbc_source_interval", timing.source_interval_us);
+          }
+        });
+
         while (true) {
           auto now = std::chrono::steady_clock::now();
+          const auto scheduled = next_frame;
           if (next_frame > now) {
             std::this_thread::sleep_for(next_frame - now);
             sleep_overshoot_logger.first_point(next_frame);
@@ -1343,7 +1356,10 @@ namespace cuda {
           }
 
           std::shared_ptr<platf::img_t> img_out;
-          auto status = snapshot(pull_free_image_cb, img_out, 150ms, *cursor);
+          timing.poll_lateness_us.push_back(
+            std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - scheduled).count()
+          );
+          auto status = snapshot(pull_free_image_cb, img_out, 150ms, *cursor, timing);
           switch (status) {
             case platf::capture_e::reinit:
             case platf::capture_e::error:
@@ -1457,14 +1473,16 @@ namespace cuda {
        * @param img_out Captured CUDA image returned to the streaming pipeline.
        * @param timeout Maximum time to wait for the operation.
        * @param cursor Cursor image or visibility state to composite.
+       * @param timing Capture loop timing accumulator.
        * @return Capture status reported to the streaming pipeline.
        */
-      platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
+      platf::capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor, ::nvfbc::capture_timing_t &timing) {
         if (cursor != cursor_visible) {
           auto status = reinit(cursor);
           if (status != platf::capture_e::ok) {
             return status;
           }
+          timing.begin_driver_session();
         }
 
         CUdeviceptr device_ptr;
@@ -1497,6 +1515,8 @@ namespace cuda {
                              << info.dwByteSize << " bytes); reinitializing capture"sv;
           return platf::capture_e::reinit;
         }
+
+        timing.record_grab(info.bIsNewFrame == NVFBC_TRUE, info.ulTimestampUs, info.dwMissedFrames);
 
         // NOWAIT may return the previous frame. Keep polling for real changes,
         // but leave static refresh to the encoder's minimum-FPS cadence.
