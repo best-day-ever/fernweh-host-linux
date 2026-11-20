@@ -78,7 +78,7 @@ namespace {
     int control_descriptor {-1};
     std::string session_id;
     std::uint64_t generation {};
-    int pam_descriptor {-1};  ///< Private descriptor-only broker delegation endpoint.
+    pid_t pam_delegate_pid {-1};  ///< Child servicing this worker's private broker delegation.
     bool greeter {false};
     bool support_unlocked {false};  ///< Relock this exact desktop if its media worker dies.
   };
@@ -314,6 +314,39 @@ namespace {
     return true;
   }
 
+  /**
+   * @brief Run the private PAM delegate with only its own channel and standard descriptors.
+   * @param channel Supervisor side of the root-created socket pair.
+   * @param supervisor Original parent PID.
+   * @param session_id Exact graphical session this worker was started for.
+   */
+  [[noreturn]] void run_pam_delegate(int channel, pid_t supervisor, const std::string &session_id) {
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != supervisor ||
+        (channel > 3 && close_range(3, channel - 1, 0) != 0) ||
+        close_range(channel + 1, ~0U, 0) != 0) {
+      std::_Exit(126);
+    }
+    namespace delegation = plank::auth::broker_channel;
+    const bool closed = delegation::serve_connections(channel, [&session_id]() {
+      const auto active = plank::session::active_seat0_graphical_session();
+      return active && active->id == session_id ? delegation::connect_broker() : -1;
+    });
+    std::_Exit(closed ? 0 : 1);
+  }
+
+  /**
+   * @brief Stop and reap a worker's private delegate.
+   * @param pid Delegate PID, cleared when ownership ends.
+   */
+  void stop_pam_delegate(pid_t &pid) {
+    if (pid <= 0) {
+      return;
+    }
+    kill(pid, SIGKILL);
+    while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
+    pid = -1;
+  }
+
   worker_t launch_worker(
     const std::filesystem::path &worker,
     const plank::session::descriptor_t &session,
@@ -344,12 +377,20 @@ namespace {
       close(pam_sockets[0]);
       return {};
     }
-    worker_t result {child, control_sockets[0], {}, 0, pam_sockets[0], false};
-    if (!send_update(result, session, environment, account_name)) {
+    // Display operations in the parent can wait on X11 for several seconds.
+    // Keep the worker's short, descriptor-only PAM exchange independent.
+    const pid_t supervisor = getpid();
+    pid_t pam_delegate = fork();
+    if (pam_delegate == 0) {
+      run_pam_delegate(pam_sockets[0], supervisor, session.id);
+    }
+    close(pam_sockets[0]);
+    worker_t result {child, control_sockets[0], {}, 0, pam_delegate, false};
+    if (pam_delegate < 0 || !send_update(result, session, environment, account_name)) {
+      stop_pam_delegate(pam_delegate);
       kill(child, SIGKILL);
       waitpid(child, nullptr, 0);
       close(control_sockets[0]);
-      close(pam_sockets[0]);
       return {};
     }
     return result;
@@ -361,6 +402,7 @@ namespace {
     if (worker.pid <= 0) {
       return;
     }
+    stop_pam_delegate(worker.pam_delegate_pid);
     relock_support_desktop(worker);
     const auto command = plank::session::desktop_handoff_command;
     const bool notified = opening_desktop && worker.greeter &&
@@ -374,7 +416,6 @@ namespace {
       const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
       if (result == worker.pid || (result < 0 && errno == ECHILD)) {
         close(worker.control_descriptor);
-        close(worker.pam_descriptor);
         worker = {};
         return;
       }
@@ -383,7 +424,6 @@ namespace {
     kill(worker.pid, SIGKILL);
     waitpid(worker.pid, nullptr, 0);
     close(worker.control_descriptor);
-    close(worker.pam_descriptor);
     worker = {};
   }
 
@@ -2658,11 +2698,10 @@ int main(int argc, char **argv) {
       }
     }
 
-    std::array<pollfd, 4> descriptors {{
+    std::array<pollfd, 3> descriptors {{
       {signal_fd, POLLIN, 0},
       {sd_login_monitor_get_fd(monitor.get()), POLLIN, 0},
       {worker.control_descriptor, POLLIN, 0},
-      {worker.pam_descriptor, POLLIN, 0},
     }};
     const int status = poll(descriptors.data(), descriptors.size(), 1000);
     if (status < 0 && errno != EINTR) {
@@ -2671,22 +2710,6 @@ int main(int argc, char **argv) {
     }
     if ((descriptors[1].revents & POLLIN) != 0) {
       sd_login_monitor_flush(monitor.get());
-    }
-    if ((descriptors[3].revents & (POLLIN | POLLHUP | POLLERR)) != 0 && worker.pid > 0) {
-      namespace delegation = plank::auth::broker_channel;
-      int unexpected_descriptor = -1;
-      const bool valid = delegation::receive_record(
-        worker.pam_descriptor, delegation::request_byte, false, unexpected_descriptor);
-      const auto active = plank::session::active_seat0_graphical_session();
-      const int broker = valid && active && active->id == worker.session_id ?
-        delegation::connect_broker() : -1;
-      const bool sent = valid && delegation::send_connection(worker.pam_descriptor, broker);
-      if (broker >= 0) close(broker);
-      if (!sent) {
-        close(worker.pam_descriptor);
-        worker.pam_descriptor = -1;
-        std::cerr << "PLANK private PAM delegation channel closed\n";
-      }
     }
     if ((descriptors[2].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0 && worker.pid > 0) {
       std::array<char, 8193> message {};
@@ -2791,9 +2814,10 @@ int main(int argc, char **argv) {
           stopping = true;
         } else if (information.ssi_signo == SIGCHLD && worker.pid > 0) {
           const pid_t result = waitpid(worker.pid, nullptr, WNOHANG);
-          if (result == worker.pid) {
-            std::clog << "PLANK worker exited; scheduling restart\n";
-            relock_support_desktop(worker);
+          const bool worker_exited = result == worker.pid;
+          const bool delegate_exited = !worker_exited && worker.pam_delegate_pid > 0 &&
+            waitpid(worker.pam_delegate_pid, nullptr, WNOHANG) == worker.pam_delegate_pid;
+          if (worker_exited || delegate_exited) {
             if (physical_display_lease && physical_display_lease->active &&
                 physical_display_lease->session_id == worker.session_id) {
               physical_display_lease->active = false;
@@ -2808,9 +2832,17 @@ int main(int argc, char **argv) {
                 std::chrono::steady_clock::now() + std::chrono::seconds {30};
               std::cerr << "PLANK worker exited with an active display arrangement; allowing 30 seconds for recovery\n";
             }
-            close(worker.control_descriptor);
-            close(worker.pam_descriptor);
-            worker = {};
+            if (delegate_exited) {
+              std::cerr << "PLANK private PAM delegate exited; replacing its worker\n";
+              worker.pam_delegate_pid = -1;
+              stop_worker(worker);
+            } else {
+              std::clog << "PLANK worker exited; scheduling restart\n";
+              stop_pam_delegate(worker.pam_delegate_pid);
+              relock_support_desktop(worker);
+              close(worker.control_descriptor);
+              worker = {};
+            }
             next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
           }
         }
@@ -2818,6 +2850,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  stop_pam_delegate(worker.pam_delegate_pid);
   if (physical_display_lease) {
     const auto selected = plank::session::active_seat0_graphical_session();
     const auto environment = selected &&

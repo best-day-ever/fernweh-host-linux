@@ -2,12 +2,14 @@
  * @file tests/unit/test_pam_deadlines.cpp
  * @brief Real socket and child-process tests for bounded broker operations.
  */
+#include "src/auth/pam_broker_channel.h"
 #include "src/auth/pam_broker_protocol.h"
 #include "src/auth/pam_client.h"
 #include "src/auth/pam_worker_watch.h"
 
 #include <future>
 #include <gtest/gtest.h>
+#include <sys/wait.h>
 
 namespace {
   namespace auth = plank::auth;
@@ -38,6 +40,64 @@ namespace {
     }
   };
 }  // namespace
+
+TEST(PamDelegation, ServicesIndependentRequestsWhileSupervisorWaits) {
+  namespace channel = auth::broker_channel;
+  int requests[2];
+  int broker[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, requests), 0);
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, broker), 0);
+  const pid_t delegate = fork();
+  ASSERT_GE(delegate, 0);
+  if (delegate == 0) {
+    close(requests[1]);
+    close(broker[1]);
+    int count = 0;
+    const bool closed = channel::serve_connections(requests[0], [&]() {
+      return ++count == 1 ? -1 : dup(broker[0]);
+    });
+    std::_Exit(closed ? 0 : 1);
+  }
+  close(requests[0]);
+  close(broker[0]);
+  // Queue a denial and then a successful exchange in the worker while the
+  // supervisor does no delegation work of its own.
+  for (const bool permitted : {false, true}) {
+    int received = -1;
+    EXPECT_EQ(send(requests[1], &channel::request_byte, 1, MSG_NOSIGNAL), 1);
+    const auth::io_context_t context {auth::io_context_t::clock_t::now() + 500ms, {}};
+    EXPECT_TRUE(auth::wait_ready(requests[1], POLLIN, context));
+    EXPECT_TRUE(channel::receive_record(requests[1], 'O', true, received));
+    EXPECT_EQ(received >= 0, permitted);
+    if (received >= 0) {
+      EXPECT_EQ(send(received, "x", 1, MSG_NOSIGNAL), 1);
+      close(received);
+      char marker {};
+      EXPECT_EQ(recv(broker[1], &marker, 1, MSG_DONTWAIT), 1);
+      EXPECT_EQ(marker, 'x');
+    }
+  }
+  close(broker[1]);
+  close(requests[1]);
+  int status {};
+  EXPECT_EQ(waitpid(delegate, &status, 0), delegate);
+  EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+TEST(PamDelegation, MalformedRequestClosesWithoutOpeningBroker) {
+  namespace channel = auth::broker_channel;
+  int requests[2];
+  ASSERT_EQ(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, requests), 0);
+  EXPECT_EQ(send(requests[1], "bad", 3, MSG_NOSIGNAL), 3);
+  bool attempted = false;
+  EXPECT_FALSE(channel::serve_connections(requests[0], [&]() {
+    attempted = true;
+    return -1;
+  }));
+  EXPECT_FALSE(attempted);
+  close(requests[0]);
+  close(requests[1]);
+}
 
 TEST_F(PamDeadline, SilentPeerTimesOut) {
   auth::message_t message;
