@@ -606,6 +606,11 @@ namespace stream {
     return true;
   }
 
+  /**
+   * @brief Track the X11 pointer and retry unavailable cursor images during display transitions.
+   * @param stop_token Request to stop the cursor worker.
+   * @param session Stream receiving cursor shapes and positions.
+   */
   void localCursorThread(std::stop_token stop_token, session_t *session) {
     platf::set_thread_name("sc::cursor");
 
@@ -619,12 +624,10 @@ namespace stream {
 
     platf::cursor_image_t image {};
     unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
-    if (!cursor->capture(image) ||
-        !queue_cursor_shape(session, image, queued_serial)) {
-      BOOST_LOG(error) << "Unable to capture the initial X11 cursor through XFixes"sv;
-      session::stop(*session);
-      return;
-    }
+    bool shape_pending = true;
+    const auto no_retry = std::chrono::steady_clock::time_point::min();
+    auto next_shape_attempt = no_retry;
+    constexpr auto cursor_shape_retry_period = 100ms;
 
     BOOST_LOG(info) << "PLANK cursor position uses fixed-deadline XQueryPointer sampling; cursor shape uses XFixes notifications"sv;
     std::uint64_t position_sequence = 0;
@@ -647,12 +650,24 @@ namespace stream {
         session::stop(*session);
         return;
       }
-      if (shape_status > 0 &&
-          (!cursor->capture(image) ||
-           !queue_cursor_shape(session, image, queued_serial))) {
-        BOOST_LOG(error) << "Unable to refresh the active X11 cursor through XFixes"sv;
-        session::stop(*session);
-        return;
+      shape_pending |= shape_status > 0;
+      const auto shape_now = std::chrono::steady_clock::now();
+      if (shape_pending && shape_now >= next_shape_attempt) {
+        if (!cursor->capture(image)) {
+          // XFixes can temporarily have no cursor image after changing outputs.
+          // Keep sending media and retry without requiring another shape event.
+          if (next_shape_attempt == no_retry) {
+            BOOST_LOG(warning) << "XFixes cursor image temporarily unavailable; retrying"sv;
+          }
+          next_shape_attempt = shape_now + cursor_shape_retry_period;
+        } else {
+          if (!queue_cursor_shape(session, image, queued_serial)) {
+            session::stop(*session);
+            return;
+          }
+          shape_pending = false;
+          next_shape_attempt = no_retry;
+        }
       }
 
       next_cursor_sample += cursor_sample_period;
