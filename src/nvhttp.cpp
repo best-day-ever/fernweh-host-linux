@@ -71,6 +71,7 @@
 #include "session/collaboration.h"
 #include "plank_arrangement.h"
 #include "plank_arrangement_json.h"
+#include "plank_live_layout.h"
 #include "plank_topology.h"
 #include "plank_topology_json.h"
 #include "utility.h"
@@ -751,16 +752,7 @@ namespace nvhttp {
     return false;
   }
 
-  struct live_layout_t {
-    std::string startup_kind;
-    std::string startup_policy;
-    std::string kind;
-    bool virtual_layout {};
-    std::vector<std::string> virtual_modes;
-    bool temporary_physical_lease {};
-    uid_t lease_uid {};
-    std::optional<plank::session::runtime_display_state_2_t> arrangement;  ///< Live arrangement lease.
-  };
+  using plank::topology::live_layout_t;
 
   live_layout_t live_display_layout(
     const std::vector<platf::display_info_t> &outputs
@@ -774,25 +766,11 @@ namespace nvhttp {
     result.startup_kind = result.startup_policy == "virtual" ? "single" : "physical";
     if (result.startup_policy != "virtual"sv) {
       if (auto state = plank::session::read_runtime_display_state_2(runtime_display_state)) {
-        result.temporary_physical_lease = true;
-        result.lease_uid = state->lease_uid;
-        // The supervisor records a lease before applying it; while that
-        // transition runs the legacy view is not live yet.
         const auto transition = plank::session::read_display_transition(runtime_display_transition);
         const bool applying = transition && transition->state == "pending"sv &&
           transition->request == state->request &&
           plank::session::transition_current(*transition, static_cast<std::int64_t>(std::time(nullptr)));
-        if (state->origin == "legacy"sv && !applying) {
-          // A legacy single/dual request served by the arrangement engine
-          // keeps the exact legacy view its client binds to.
-          result.kind = state->layout;
-          result.virtual_layout = true;
-          result.virtual_modes = {state->mode_1};
-          if (!state->mode_2.empty()) result.virtual_modes.push_back(state->mode_2);
-        } else {
-          result.kind = "physical";
-        }
-        result.arrangement = std::move(state);
+        plank::topology::observe_arrangement(result, std::move(*state), outputs, applying);
         return result;
       }
     }
@@ -965,25 +943,6 @@ namespace nvhttp {
     if (!code.empty()) tree.put("root.PlankDisplayArrangementError", std::string {code});
   }
 
-  /** Whether the live outputs are exactly the shown outputs of an arrangement lease. */
-  bool arrangement_outputs_live(const plank::session::runtime_display_state_2_t &state,
-                                const std::vector<platf::display_info_t> &outputs) {
-    std::size_t shown = 0;
-    for (const auto &output : state.outputs) {
-      if (output.backing == "off"sv) continue;
-      ++shown;
-      const auto id = "x11:" + output.randr;
-      const auto live = std::find_if(outputs.begin(), outputs.end(), [&](const auto &candidate) {
-        return candidate.id == id;
-      });
-      if (live == outputs.end() || live->x != output.x || live->y != output.y ||
-          live->width != output.width || live->height != output.height) {
-        return false;
-      }
-    }
-    return shown == outputs.size();
-  }
-
   /**
    * @brief Answer a canonical arrangement that is not live yet from the published transition.
    *
@@ -1106,8 +1065,7 @@ namespace nvhttp {
       return false;
     }
     if (live_layout.arrangement && live_layout.arrangement->origin == "arrangement"sv &&
-        live_layout.arrangement->request == session.display_arrangement &&
-        arrangement_outputs_live(*live_layout.arrangement, outputs)) {
+        live_layout.arrangement->request == session.display_arrangement) {
       // The canonical arrangement is already live: a no-op binding.
       session.plank_display_lease = true;
       session.plank_display_lease_uid = authenticated_uid;
@@ -1197,6 +1155,11 @@ namespace nvhttp {
     if (validation == plank::topology::layout_error::invalid_request) {
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message", "Invalid PLANK host-layout binding");
+      return false;
+    }
+    if (live_layout.temporary_physical_lease && live_layout.lease_uid != authenticated_uid) {
+      tree.put("root.<xmlattr>.status_code", 423);
+      tree.put("root.<xmlattr>.status_message", "The temporary workstation display layout belongs to another account");
       return false;
     }
     if (validation == plank::topology::layout_error::mismatch &&
@@ -1298,11 +1261,6 @@ namespace nvhttp {
       }
     }
     if (live_layout.temporary_physical_lease) {
-      if (live_layout.lease_uid != authenticated_uid) {
-        tree.put("root.<xmlattr>.status_code", 423);
-        tree.put("root.<xmlattr>.status_message", "The temporary workstation display layout belongs to another account");
-        return false;
-      }
       session.plank_display_lease = true;
       session.plank_display_lease_uid = authenticated_uid;
     }
