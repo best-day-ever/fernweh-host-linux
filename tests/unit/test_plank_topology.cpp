@@ -5,6 +5,7 @@
 #include "src/plank_topology.h"
 
 #include "src/plank_arrangement_json.h"
+#include "src/plank_live_layout.h"
 #include "src/plank_topology_json.h"
 
 #include <fstream>
@@ -254,6 +255,90 @@ namespace {
     return result;
   }
 }  // namespace
+
+TEST(PlankTopology, RestoredOutputDoesNotAdvertiseThePreviousLegacyLayout) {
+  plank::session::runtime_display_state_2_t lease;
+  lease.lease_uid = 1001;
+  lease.origin = "legacy";
+  lease.layout = "single";
+  lease.mode_1 = "2560x1440";
+  lease.outputs = {
+    {"DP-1", "DPY-1", "physical-viewport", "2560x1440", 0, 0, 0, 2560, 1440},
+  };
+  const std::vector<topology::document_output_t> restored {
+    {"x11:DP-1", "DP-1", 0, 0, 1920, 1080, 0, 60000, true},
+  };
+
+  topology::live_layout_t observed;
+  topology::observe_arrangement(observed, lease, restored, false);
+  EXPECT_EQ(observed.kind, "physical");
+  EXPECT_FALSE(observed.virtual_layout);
+  EXPECT_TRUE(observed.virtual_modes.empty());
+  EXPECT_FALSE(observed.arrangement.has_value());
+  EXPECT_TRUE(observed.temporary_physical_lease);
+  EXPECT_EQ(observed.lease_uid, lease.lease_uid);
+  EXPECT_EQ(topology::validate_layout_binding("single", "2560x1440", "", observed.kind,
+                                              "", "", restored.size()),
+            topology::layout_error::mismatch);
+}
+
+TEST(PlankTopology, AdvertisesLegacyModesOnlyAfterTheWholeLeaseIsApplied) {
+  plank::session::runtime_display_state_2_t lease;
+  lease.origin = "legacy";
+  lease.layout = "dual-horizontal";
+  lease.mode_1 = "2560x1440";
+  lease.mode_2 = "1920x1080";
+  lease.outputs = {
+    {"DP-1", "DPY-1", "physical-viewport", "2560x1440", 0, 0, 0, 2560, 1440},
+    {"DP-2", "DPY-2", "virtual", "1920x1080", 1, 2560, 0, 1920, 1080},
+    {"DP-3", "DPY-3", "off", "", -1, 0, 0, 0, 0},
+  };
+  std::vector<topology::document_output_t> outputs {
+    {"x11:DP-1", "DP-1", 0, 0, 2560, 1440, 0, 60000, true},
+    {"x11:DP-2", "DP-2", 2560, 0, 1920, 1080, 0, 60000, false},
+  };
+  topology::live_layout_t pending;
+  topology::observe_arrangement(pending, lease, outputs, true);
+  EXPECT_EQ(pending.kind, "physical");
+  EXPECT_FALSE(pending.arrangement.has_value());
+
+  topology::live_layout_t applied;
+  topology::observe_arrangement(applied, lease, outputs, false);
+  ASSERT_TRUE(applied.arrangement.has_value());
+  EXPECT_TRUE(applied.virtual_layout);
+  EXPECT_EQ(applied.kind, "dual-horizontal");
+  EXPECT_EQ(applied.virtual_modes, std::vector<std::string>({"2560x1440", "1920x1080"}));
+
+  outputs.pop_back();
+  outputs[0].id = "x11:DP-3";
+  topology::live_layout_t replaced;
+  topology::observe_arrangement(replaced, lease, outputs, false);
+  EXPECT_EQ(replaced.kind, "physical");
+  EXPECT_FALSE(replaced.arrangement.has_value());
+}
+
+TEST(PlankTopology, PublishesArrangementCaptureOnlyForTheObservedLayout) {
+  plank::session::runtime_display_state_2_t lease;
+  lease.origin = "arrangement";
+  lease.request = "1:2560x1440+0+0:auto";
+  lease.outputs = {
+    {"DP-1", "DPY-1", "physical-viewport", "2560x1440", 0, 0, 0, 2560, 1440},
+  };
+  std::vector<topology::document_output_t> outputs {
+    {"x11:DP-1", "DP-1", 0, 0, 2560, 1440, 0, 60000, true},
+  };
+  topology::live_layout_t applied;
+  topology::observe_arrangement(applied, lease, outputs, false);
+  ASSERT_TRUE(applied.arrangement.has_value());
+  EXPECT_EQ(applied.arrangement->request, lease.request);
+  EXPECT_EQ(applied.kind, "physical");
+  EXPECT_FALSE(applied.virtual_layout);
+
+  outputs[0].x = 100;
+  topology::live_layout_t moved;
+  topology::observe_arrangement(moved, lease, outputs, false);
+  EXPECT_FALSE(moved.arrangement.has_value());
+}
 
 TEST(PlankTopology, GatesTheArrangementFeaturePerHost) {
   EXPECT_EQ(topology::feature_display_arrangement, 0x8000000U);
