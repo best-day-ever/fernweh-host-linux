@@ -568,7 +568,8 @@ namespace {
     const std::vector<std::string> &arguments,
     std::chrono::seconds timeout,
     const account_t &account,
-    const plank::session::environment_t &environment
+    const plank::session::environment_t &environment,
+    std::string_view user_bus_socket = {}
   ) {
     if (!program.is_absolute() || access(program.c_str(), X_OK) != 0 ||
         account.uid == 0 || account.name.empty()) return std::nullopt;
@@ -578,7 +579,7 @@ namespace {
       "--gid=" + std::to_string(account.gid),
       "--property=NoNewPrivileges=yes",
       "--property=ProtectSystem=strict",
-      "--property=ProtectHome=yes",
+      user_bus_socket.empty() ? "--property=ProtectHome=yes" : "--property=ProtectHome=tmpfs",
       "--property=RestrictAddressFamilies=AF_UNIX",
       "--property=RuntimeMaxSec=" + std::to_string(timeout.count()) + "s",
       "--setenv=HOME=" + account.home,
@@ -588,8 +589,11 @@ namespace {
       "--setenv=DISPLAY=" + environment.display,
       "--setenv=XAUTHORITY=" + environment.xauthority,
       "--setenv=XDG_RUNTIME_DIR=" + environment.runtime_directory,
-      "--", program.string()
     };
+    if (!user_bus_socket.empty()) {
+      transient_arguments.push_back("--property=BindReadOnlyPaths=" + std::string {user_bus_socket});
+    }
+    transient_arguments.insert(transient_arguments.end(), {"--", program.string()});
     transient_arguments.insert(
       transient_arguments.end(), arguments.begin(), arguments.end()
     );
@@ -880,6 +884,7 @@ namespace {
     std::string request;
     physical_snapshot_t snapshot;
     std::optional<std::string> primary_before;  ///< Empty means no RandR primary; nullopt is an old recovery record.
+    std::string kscreen_instance;  ///< The user's D-Bus and KDED identity before taking the display lease.
     std::vector<plank::session::runtime_display_output_t> outputs;
     bool active {};
     std::chrono::steady_clock::time_point deadline;
@@ -1222,6 +1227,59 @@ namespace {
     return record;
   }
 
+  /** Call a fixed session-bus method as the desktop user without activating services. */
+  nlohmann::json display_bus_call(const account_t &account, const std::vector<std::string> &method) {
+    const auto socket = "/run/user/" + std::to_string(account.uid) + "/bus";
+    std::vector<std::string> args {
+      "--address=unix:path=" + socket,
+      "--auto-start=no", "--timeout=2", "--json=short", "call",
+    };
+    args.insert(args.end(), method.begin(), method.end());
+    const auto reply = run_bounded_user_command_capture("/usr/bin/busctl", args, std::chrono::seconds {3}, account, {}, socket);
+    if (!reply) return {};
+    const auto json = nlohmann::json::parse(*reply, nullptr, false);
+    if (!json.is_object() || !json.contains("data") || !json["data"].is_array() || json["data"].size() != 1) return {};
+    return json["data"][0];
+  }
+
+  /** Query KDED's current loaded modules without loading the display manager. */
+  std::optional<bool> kscreen_loaded(const account_t &account, const std::string &owner) {
+    const auto modules = display_bus_call(account, {owner, "/kded", "org.kde.kded5", "loadedModules"});
+    if (!modules.is_array()) return std::nullopt;
+    return std::find(modules.begin(), modules.end(), "kscreen") != modules.end();
+  }
+
+  /** Identify a loaded KScreen module by bus ID and the unique owner on that bus. */
+  std::string loaded_kscreen_instance(const account_t &account) {
+    const auto owner = display_bus_call(account, {"org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", "s", "org.kde.kded5"});
+    if (!owner.is_string() || !kscreen_loaded(account, owner.get<std::string>()).value_or(false)) return {};
+    const auto bus_id = display_bus_call(account, {"org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetId"});
+    return bus_id.is_string() ? bus_id.get<std::string>() + '/' + owner.get<std::string>() : std::string {};
+  }
+
+  /** Pause or resume only the KScreen module that was running when the lease began. */
+  bool set_lease_kscreen(const arrangement_lease_t &lease, bool load) {
+    if (lease.kscreen_instance.empty()) return true;
+    const auto path = "/run/user/" + std::to_string(lease.uid) + "/bus";
+    struct stat info {};
+    if (stat(path.c_str(), &info) != 0) return load && errno == ENOENT;
+    const auto account = account_for_uid(lease.uid);
+    if (!account || !S_ISSOCK(info.st_mode)) return false;
+    const auto separator = lease.kscreen_instance.find('/');
+    const auto expected_bus = lease.kscreen_instance.substr(0, separator);
+    const auto owner = lease.kscreen_instance.substr(separator + 1);
+    const auto bus = display_bus_call(*account, {"org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetId"});
+    if (!bus.is_string()) return false;
+    if (bus != expected_bus) return load;
+    if (const auto loaded = kscreen_loaded(*account, owner)) {
+      if (*loaded == load) return true;
+      return display_bus_call(*account, {owner, "/kded", "org.kde.kded5", load ? "loadModule" : "unloadModule", "s", "kscreen"}) == true;
+    }
+    // A replaced daemon owns its own settings. Never load our old module into it.
+    const auto names = display_bus_call(*account, {"org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames"});
+    return load && names.is_array() && std::find(names.begin(), names.end(), owner) == names.end();
+  }
+
   std::string arrangement_state_message(const arrangement_lease_t &lease) {
     plank::session::runtime_display_state_2_t state;
     state.lease_uid = lease.uid;
@@ -1233,6 +1291,7 @@ namespace {
     state.mode_2 = lease.mode_2;
     state.request = lease.request;
     state.primary_before = lease.primary_before;
+    state.kscreen_instance = lease.kscreen_instance;
     state.outputs = lease.outputs;
     state.snapshot = lease.snapshot.assignment;
     return plank::session::runtime_display_state_2_message(state);
@@ -1243,10 +1302,11 @@ namespace {
     bool metamode_exact {};  ///< The exact snapshot came back.
     bool visibility_exact {};  ///< Every recorded non-desktop value came back.
     bool primary_exact {true};  ///< The pre-lease RandR primary came back when recorded.
+    bool kscreen_restored {true};  ///< The desktop's automatic display management was restored.
     bool fallback {};  ///< A currently connected physical output was tried instead.
     bool recovered {};  ///< Exact or fallback succeeded.
     std::string restored;  ///< CurrentMetaMode after the restore.
-    bool exact() const { return metamode_exact && visibility_exact && primary_exact; }
+    bool exact() const { return metamode_exact && visibility_exact && primary_exact && kscreen_restored; }
   };
 
   /**
@@ -1325,8 +1385,9 @@ namespace {
     if (!report.primary_exact) {
       std::cerr << "ERROR: PLANK RandR primary did not return to its pre-session output\n";
     }
-    if (report.exact()) {
-      record.clear();
+    if (report.metamode_exact && report.visibility_exact && report.primary_exact) {
+      report.kscreen_restored = set_lease_kscreen(lease, true);
+      if (report.exact()) record.clear();
       report.recovered = true;
       std::clog << "Restored the exact pre-session NVIDIA MetaMode\n";
       return report;
@@ -1363,6 +1424,7 @@ namespace {
     if (const auto restored = capture_physical_snapshot(*account, environment)) {
       report.restored = restored->assignment;
     }
+    report.kscreen_restored = set_lease_kscreen(lease, true);
     std::cerr << "ERROR: Exact PLANK display restoration failed; "
               << (report.recovered ? "enabled a physical output at its native mode" :
                                      "physical-output recovery also failed")
@@ -1390,7 +1452,7 @@ namespace {
         lease.reset();
         return;
       }
-    } else if (lease_session_vanished(lease->session_id)) {
+    } else if (lease_session_vanished(lease->session_id) && set_lease_kscreen(*lease, true)) {
       clear_runtime_display_state();
       lease.reset();
       std::clog << "Discarded a PLANK arrangement after its X server session ended\n";
@@ -1455,6 +1517,7 @@ namespace {
     if (retained != nullptr) {
       lease.snapshot = retained->snapshot;
       lease.primary_before = retained->primary_before;
+      lease.kscreen_instance = retained->kscreen_instance;
       for (const auto &output : retained->outputs) before[output.randr] = output.non_desktop_before;
     } else {
       const auto snapshot = capture_physical_snapshot(*account, environment);
@@ -1492,12 +1555,18 @@ namespace {
     }
     lease.session_id = session.id;
     lease.display = environment.display;
+    if (lease.kscreen_instance.empty() && session.session_class == "user" && lease.uid == session.uid) {
+      lease.kscreen_instance = loaded_kscreen_instance(*account);
+    }
 
     // Record before mutation. Propagate the actual rollback effect to every
     // caller so a failed carry/re-acquire cannot erase recovery authority.
     const auto result = plank::display::recorded_display_change(
       [&] { return record.write(arrangement_state_message(lease)); },
       [&]() -> std::string {
+        // Plasma reconfigures connectors as they appear and disappear. Keep its
+        // existing automatic policy suspended while this transaction owns them.
+        if (!set_lease_kscreen(lease, false)) return "display_manager_busy";
         if (!run_bounded_user_command(
               xrandr_path, plank::display::prepare_visibility_arguments(plan),
               lease_command_timeout, *account, environment)) {
@@ -1573,6 +1642,7 @@ namespace {
     lease.mode_2 = state.mode_2;
     lease.request = state.request;
     lease.primary_before = state.primary_before;
+    lease.kscreen_instance = state.kscreen_instance;
     lease.outputs = state.outputs;
     lease.snapshot.assignment = state.snapshot;
     if (const auto parsed = plank::display::parse_current_metamode(":: " + state.snapshot)) {
@@ -1589,6 +1659,7 @@ namespace {
     const lease_record_t &record = runtime_lease_record()
   ) {
     if (state.session_id != session.id || state.display != environment.display) {
+      if (!set_lease_kscreen(lease_from_state(state), true)) return false;
       record.clear();
       std::clog << "Discarded a stale PLANK display arrangement from an X server that has ended\n";
       return true;
@@ -1966,7 +2037,7 @@ namespace {
     const auto restore_json = [](const restore_report_t &restore) {
       return nlohmann::json {
         {"metamode_exact", restore.metamode_exact}, {"visibility_exact", restore.visibility_exact},
-        {"primary_exact", restore.primary_exact},
+        {"primary_exact", restore.primary_exact}, {"kscreen_restored", restore.kscreen_restored},
         {"fallback", restore.fallback}, {"recovered", restore.recovered}, {"restored", restore.restored},
       };
     };
@@ -2009,10 +2080,12 @@ namespace {
 
     const auto current = plank::session::active_seat0_graphical_session();
     if (!current || current->id != selected->id) {
-      record.clear();
-      report["restore"] = {{"skipped", "the leased X server ended during the hold"}};
+      const bool kscreen_restored = set_lease_kscreen(lease, true);
+      if (kscreen_restored) record.clear();
+      report["restore"] = {{"skipped", "the leased X server left the active seat during the hold"},
+                           {"kscreen_restored", kscreen_restored}};
       report["success"] = false;
-      release();
+      release(!kscreen_restored);
       return emit_report(report, options.json, plank::display::qualification_failed);
     }
     const auto restored = restore_arrangement_lease(lease, *selected, *environment, inventory, record);
@@ -2132,7 +2205,8 @@ int main(int argc, char **argv) {
         ((arrangement_lease && lease_session_vanished(arrangement_lease->session_id)) ||
          (physical_display_lease && lease_session_vanished(physical_display_lease->session_id)))) {
       stop_worker(worker);
-      if (arrangement_lease && lease_session_vanished(arrangement_lease->session_id)) {
+      if (arrangement_lease && lease_session_vanished(arrangement_lease->session_id) &&
+          set_lease_kscreen(*arrangement_lease, true)) {
         arrangement_lease.reset();
         clear_runtime_display_state();
         std::clog << "Discarded a PLANK display arrangement after its X server session ended\n";
@@ -2285,7 +2359,8 @@ int main(int argc, char **argv) {
             );
             arrangement_restore_pending = !restored.exact();
           } else {
-            clear_runtime_display_state();
+            arrangement_restore_pending = !set_lease_kscreen(*arrangement_lease, true);
+            if (!arrangement_restore_pending) clear_runtime_display_state();
           }
           if (!arrangement_restore_pending) arrangement_lease.reset();
         }
@@ -2530,6 +2605,10 @@ int main(int argc, char **argv) {
         const bool old_arrangement = arrangement_lease && arrangement_lease->session_id != selected->id;
         const bool old_physical_lease = physical_display_lease && physical_display_lease->session_id != selected->id;
         if (old_arrangement || old_physical_lease) {
+          if (old_arrangement && !set_lease_kscreen(*arrangement_lease, true)) {
+            next_launch = std::chrono::steady_clock::now() + std::chrono::seconds {2};
+            continue;
+          }
           if (old_arrangement) arrangement_lease.reset();
           if (old_physical_lease) physical_display_lease.reset();
           clear_runtime_display_state();
