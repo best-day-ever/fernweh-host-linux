@@ -2044,9 +2044,16 @@ namespace nvhttp {
     // PlankOccupied. The account name is published only when the administrator
     // opts in; BDE deployments leave publish_session_user off.
     const auto desktop = plank::session::confirmed_desktop_occupancy(config::nvhttp.publish_session_user);
-    const bool occupied = desktop.desktop_owned || session_stream::has_stream_session();
+    const bool stream_active = session_stream::has_stream_session();
+    const bool occupied = desktop.desktop_owned || stream_active;
     tree.put("root.PlankOccupied", occupied ? 1 : 0);
     tree.put("root.PlankWorkstationBusy", occupied ? 1 : 0);
+    // Local workstation schedulers need live stream and launch state even when
+    // the desktop stays signed in. Keep that distinction local to the Host.
+    const auto peer = net::addr_to_normalized_string(request->remote_endpoint().address());
+    if (peer == "127.0.0.1" || peer == "::1") {
+      tree.put("root.PlankStreamActive", stream_active ? 1 : 0);
+    }
     if (desktop.account_name) tree.put("root.PlankSessionUser", *desktop.account_name);
 
     std::ostringstream data;

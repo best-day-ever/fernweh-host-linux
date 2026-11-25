@@ -138,6 +138,11 @@ The same unauthenticated response always carries the nameless
 setting off: the Fernweh broker reads only the nameless flag, after pinning
 the Host certificate.
 
+Loopback requests also receive `PlankStreamActive`. It is `1` while a stream
+or its launch reservation occupies the Host, and `0` after the last one ends.
+Local workstation schedulers can read it when a desktop stays signed in
+between connections. The field contains no account or session identity.
+
 ### pkey
 
 Path to the host TLS private key. The packaged profile uses
