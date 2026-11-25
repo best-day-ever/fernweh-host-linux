@@ -659,6 +659,7 @@ namespace plank::session {
 
     bool valid_state_2(const runtime_display_state_2_t &state) {
       static const std::regex local_display {R"(^:[0-9]+(?:\.[0-9]+)?$)"};
+      static const std::regex kscreen_instance {R"(^[0-9a-f]{32}/:[0-9]{1,20}\.[0-9]{1,20}$)"};
       const bool legacy = state.origin == "legacy";
       if (state.lease_uid == 0 || !state_2_name(state.session_id) ||
           !std::regex_match(state.display, local_display) ||
@@ -668,6 +669,7 @@ namespace plank::session {
           !plank::arrangement::parse(state.request).request ||
           (state.primary_before && !state.primary_before->empty() &&
            !state_2_name(*state.primary_before)) ||
+          (!state.kscreen_instance.empty() && !std::regex_match(state.kscreen_instance, kscreen_instance)) ||
           state.outputs.empty() || state.outputs.size() > maximum_state_2_outputs ||
           state.snapshot.empty() || !printable_line(state.snapshot)) {
         return false;
@@ -725,6 +727,7 @@ namespace plank::session {
                "\nmode_1=" + state.mode_1 + "\nmode_2=" + state.mode_2 + "\nrequest=" + state.request +
                "\n";
     if (state.primary_before) message += "primary=" + *state.primary_before + "\n";
+    if (!state.kscreen_instance.empty()) message += "kscreen=" + state.kscreen_instance + "\n";
     for (const auto &output : state.outputs) {
       message += "output=" + output.randr + " " + output.dpy + " " + output.backing + " " +
                  (output.carrier.empty() ? std::string {"-"} : output.carrier) + " " +
@@ -760,6 +763,10 @@ namespace plank::session {
     std::size_t output_start = head.size();
     if ((*lines)[output_start].first == "primary") {
       state.primary_before = std::string {(*lines)[output_start].second};
+      ++output_start;
+    }
+    if ((*lines)[output_start].first == "kscreen") {
+      state.kscreen_instance = std::string {(*lines)[output_start].second};
       ++output_start;
     }
     for (std::size_t index = output_start; index + 1 < lines->size(); ++index) {

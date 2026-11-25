@@ -354,6 +354,7 @@ TEST(SessionContext, RoundTripsArrangementLeaseState) {
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed->request, state.request);
   EXPECT_EQ(parsed->primary_before, state.primary_before);
+  EXPECT_TRUE(parsed->kscreen_instance.empty());
   ASSERT_EQ(parsed->outputs.size(), 3U);
   EXPECT_EQ(parsed->outputs[0].backing, "virtual");
   EXPECT_EQ(parsed->outputs[0].carrier, "3024x1890");
@@ -372,6 +373,12 @@ TEST(SessionContext, RoundTripsArrangementLeaseState) {
   const auto older_message = session::runtime_display_state_2_message(older_record);
   ASSERT_TRUE(session::parse_runtime_display_state_2(older_message));
   EXPECT_EQ(older_message.find("\nprimary="), std::string::npos);
+
+  auto paused = state;
+  paused.kscreen_instance = "0123456789abcdef0123456789abcdef/:1.42";
+  const auto owned = session::parse_runtime_display_state_2(session::runtime_display_state_2_message(paused));
+  ASSERT_TRUE(owned);
+  EXPECT_EQ(owned->kscreen_instance, paused.kscreen_instance);
 
   // The legacy STATE-1 marker is still parsed, and the two never cross.
   EXPECT_FALSE(session::parse_runtime_display_state(message));
@@ -410,6 +417,9 @@ TEST(SessionContext, RejectsMalformedArrangementLeaseState) {
   EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
   state = arrangement_state();
   state.primary_before = "DP-0;rm";
+  EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
+  state = arrangement_state();
+  state.kscreen_instance = "0123456789abcdef0123456789abcdef/org.kde.kded5";
   EXPECT_TRUE(session::runtime_display_state_2_message(state).empty());
   state = arrangement_state();
   state.snapshot = std::string(17000, 'x');
