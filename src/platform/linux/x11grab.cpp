@@ -7,6 +7,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <ranges>
 #include <thread>
@@ -23,6 +24,7 @@
 #include <X11/X.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
 #include <xcb/shm.h>
 #include <xcb/xfixes.h>
@@ -229,7 +231,6 @@ namespace platf {
     _FN(Sync, int, (Display * display, Bool discard));
 
     _FN(CloseDisplay, int, (Display * display));
-    _FN(Free, int, (void *data));
     _FN(InitThreads, Status, (void) );
     _FN(SetIOErrorHandler, XIOErrorHandler, (XIOErrorHandler handler));
 
@@ -332,7 +333,9 @@ namespace platf {
     }  // namespace rr
 
     namespace fix {
-      _FN(GetCursorImage, XFixesCursorImage *, (Display * dpy));
+      _FN(GetXCBConnection, xcb_connection_t *, (Display * dpy));
+      _FN(GetCursorImage, xcb_xfixes_get_cursor_image_cookie_t, (xcb_connection_t * connection));
+      _FN(GetCursorImageReply, xcb_xfixes_get_cursor_image_reply_t *, (xcb_connection_t * connection, xcb_xfixes_get_cursor_image_cookie_t request, xcb_generic_error_t **error));
       _FN(QueryExtension, Bool, (Display * dpy, int *event_base_return, int *error_base_return));
       _FN(SelectCursorInput, void, (Display * dpy, Window win, unsigned long event_mask));
 
@@ -351,8 +354,17 @@ namespace platf {
           }
         }
 
+        auto *xlib_xcb = dyn::handle({"libX11-xcb.so.1", "libX11-xcb.so"});
+        auto *xcb_xfixes = dyn::handle({"libxcb-xfixes.so.0", "libxcb-xfixes.so"});
+        if (!xlib_xcb || !xcb_xfixes ||
+            dyn::load(xlib_xcb, {{(dyn::apiproc *) &GetXCBConnection, "XGetXCBConnection"}}) ||
+            dyn::load(xcb_xfixes, {
+              {(dyn::apiproc *) &GetCursorImage, "xcb_xfixes_get_cursor_image"},
+              {(dyn::apiproc *) &GetCursorImageReply, "xcb_xfixes_get_cursor_image_reply"},
+            })) {
+          return -1;
+        }
         std::vector<std::tuple<dyn::apiproc *, const char *>> funcs {
-          {(dyn::apiproc *) &GetCursorImage, "XFixesGetCursorImage"},
           {(dyn::apiproc *) &QueryExtension, "XFixesQueryExtension"},
           {(dyn::apiproc *) &SelectCursorInput, "XFixesSelectCursorInput"},
         };
@@ -395,7 +407,6 @@ namespace platf {
         {(dyn::apiproc *) &MapRaised, "XMapRaised"},
         {(dyn::apiproc *) &DestroyWindow, "XDestroyWindow"},
         {(dyn::apiproc *) &Sync, "XSync"},
-        {(dyn::apiproc *) &Free, "XFree"},
         {(dyn::apiproc *) &CloseDisplay, "XCloseDisplay"},
         {(dyn::apiproc *) &InitThreads, "XInitThreads"},
         {(dyn::apiproc *) &SetIOErrorHandler, "XSetIOErrorHandler"},
@@ -405,7 +416,12 @@ namespace platf {
         return -1;
       }
 
-      // Install before opening a display or starting capture/cursor threads.
+      // NvFBC and other backends also share Xlib with the cursor thread.
+      // Initialize threading before this backend opens any X11 connection.
+      if (!InitThreads()) {
+        BOOST_LOG(error) << "Unable to initialize Xlib threading"sv;
+        return -1;
+      }
       // A dead X server invalidates this worker's entire graphical generation.
       SetIOErrorHandler(retire_failed_x11_worker);
       funcs_loaded = true;
@@ -513,25 +529,9 @@ namespace platf {
   }  // namespace xcb
 
   /**
-   * @brief Release x resources.
-   *
-   * @param p Pointer passed to the deleter or conversion helper.
-   */
-  void freeX(XFixesCursorImage *);
-
-  /**
    * @brief XCB connection pointer released with `xcb_disconnect`.
    */
   using xcb_connect_t = util::dyn_safe_ptr<xcb_connection_t, &xcb::disconnect>;
-  /**
-   * @brief XCB image pointer released with `xcb_image_destroy`.
-   */
-
-  /**
-   * @brief XFixes cursor image pointer released with `XFree`.
-   */
-  using xcursor_t = util::safe_ptr<XFixesCursorImage, freeX>;
-
   /**
    * @brief XRandR CRTC info pointer released with `XRRFreeCrtcInfo`.
    */
@@ -799,7 +799,6 @@ namespace platf {
         xwindow {},
         xattr {},
         mem_type {mem_type} {
-      x11::InitThreads();
     }
 
     /**
@@ -1385,13 +1384,6 @@ namespace platf {
   }
 
   /**
-   * @brief Release x resources.
-   */
-  void freeX(XFixesCursorImage *p) {
-    x11::Free(p);
-  }
-
-  /**
    * @brief Load XCB entry points used by the X11 capture backend.
    */
   int load_xcb() {
@@ -1429,55 +1421,46 @@ namespace platf {
       return cursor;
     }
 
-    bool cursor_t::capture(platf::cursor_image_t &img) {
-      auto display = (xdisplay_t::pointer) ctx.get();
-
-      if (img.desktop_width <= 0 || img.desktop_height <= 0) {
-        XWindowAttributes root_attributes {};
-        if (!x11::GetWindowAttributes(display, DefaultRootWindow(display), &root_attributes) ||
-            root_attributes.width <= 0 || root_attributes.height <= 0) {
-          return false;
-        }
-        img.desktop_width = root_attributes.width;
-        img.desktop_height = root_attributes.height;
+    cursor_capture_result_t cursor_t::capture(platf::cursor_image_t &img) {
+      auto *connection = fix::GetXCBConnection((xdisplay_t::pointer) ctx.get());
+      // Xlib still owns the event queue. Use a checked XCB reply for the image
+      // so a protocol error can be diagnosed and retried on this connection.
+      xcb_generic_error_t *raw_error = nullptr;
+      std::unique_ptr<xcb_xfixes_get_cursor_image_reply_t, decltype(&std::free)> reply {
+        fix::GetCursorImageReply(connection, fix::GetCursorImage(connection), &raw_error), std::free
+      };
+      std::unique_ptr<xcb_generic_error_t, decltype(&std::free)> error {raw_error, std::free};
+      if (!reply) {
+        return {cursor_capture_state_e::no_reply, error ? error->error_code : std::uint8_t {0}};
       }
 
-      xcursor_t xcursor = fix::GetCursorImage(display);
-      if (!xcursor) {
-        return false;
+      const auto count = static_cast<std::size_t>(reply->width) * reply->height;
+      if (!count || reply->length != count) {
+        return {cursor_capture_state_e::invalid_image};
       }
-
-      if (img.serial != xcursor->cursor_serial) {
-        auto buf_size = xcursor->width * xcursor->height * sizeof(int);
-
-        if (img.buffer.size() < buf_size) {
-          img.buffer.resize(buf_size);
-        }
-
-        std::transform(xcursor->pixels, xcursor->pixels + buf_size / 4, (int *) img.buffer.data(), [](long pixel) -> int {
-          return pixel;
-        });
+      img.desktop_width = desktop_width_;
+      img.desktop_height = desktop_height_;
+      if (img.buffer.empty() || img.serial != reply->cursor_serial ||
+          img.width != reply->width || img.height != reply->height) {
+        img.buffer.resize(count * sizeof(std::uint32_t));
+        std::memcpy(img.buffer.data(), reply.get() + 1, img.buffer.size());
       }
 
       img.data = img.buffer.data();
-      img.width = img.src_w = xcursor->width;
-      img.height = img.src_h = xcursor->height;
-      img.hotspot_x = xcursor->xhot;
-      img.hotspot_y = xcursor->yhot;
-      img.x = xcursor->x - xcursor->xhot;
-      img.y = xcursor->y - xcursor->yhot;
-      img.pixel_pitch = 4;
+      img.width = img.src_w = reply->width;
+      img.height = img.src_h = reply->height;
+      img.hotspot_x = reply->xhot;
+      img.hotspot_y = reply->yhot;
+      img.x = reply->x - reply->xhot;
+      img.y = reply->y - reply->yhot;
+      img.pixel_pitch = sizeof(std::uint32_t);
       img.row_pitch = img.pixel_pitch * img.width;
-      img.serial = xcursor->cursor_serial;
-      img.visible = std::any_of(
-        reinterpret_cast<const std::uint32_t *>(img.data),
-        reinterpret_cast<const std::uint32_t *>(img.data) +
-          static_cast<std::size_t>(img.width) * img.height,
-        [](const std::uint32_t pixel) {
-          return (pixel & 0xFF000000U) != 0;
-        }
-      );
-      return true;
+      img.serial = reply->cursor_serial;
+      const auto *pixels = reinterpret_cast<const std::uint32_t *>(img.data);
+      img.visible = std::any_of(pixels, pixels + count, [](std::uint32_t pixel) {
+        return (pixel & 0xFF000000U) != 0;
+      });
+      return {cursor_capture_state_e::captured};
     }
 
     bool cursor_t::subscribe_shape_events() {

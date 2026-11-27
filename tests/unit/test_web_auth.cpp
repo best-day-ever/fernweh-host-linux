@@ -234,8 +234,9 @@ TEST(WebAuthManager, GssapiAdmissionIssuesPeerBoundTokenInOneRoundTrip) {
   EXPECT_FALSE(manager.claim("token", "198.51.100.250"));
 }
 
-TEST(WebAuthManager, GssapiDenialAndUnexpectedChallengeRetainNothing) {
-  for (const auto result : {auth::step_t::state_e::denied, auth::step_t::state_e::challenge}) {
+TEST(WebAuthManager, GssapiDenialUnavailableBrokerAndUnexpectedChallengeRetainNothing) {
+  using state_e = auth::step_t::state_e;
+  for (const auto result : {state_e::denied, state_e::unavailable, state_e::challenge}) {
     auto state = std::make_shared<fake_state_t>();
     auth::web_auth_manager_t manager {
       [state, result]() { return std::make_unique<fake_gssapi_conversation_t>(state, result); },
@@ -243,7 +244,7 @@ TEST(WebAuthManager, GssapiDenialAndUnexpectedChallengeRetainNothing) {
     };
     const std::vector<std::uint8_t> token {1};
     const auto step = manager.begin_gssapi("test-user", "client", token);
-    EXPECT_EQ(step.state, auth::step_t::state_e::denied);
+    EXPECT_EQ(step.state, result == state_e::unavailable ? state_e::unavailable : state_e::denied);
     EXPECT_TRUE(step.session_token.empty());
     EXPECT_TRUE(step.conversation_id.empty());
     EXPECT_TRUE(step.prompts.empty());

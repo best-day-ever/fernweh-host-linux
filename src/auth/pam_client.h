@@ -24,6 +24,7 @@ namespace plank::auth {
       challenge,  ///< Caller must collect and submit prompt responses.
       authenticated,  ///< PAM authentication and session open succeeded.
       denied,  ///< PAM or protocol processing failed.
+      unavailable,  ///< The worker could not obtain a local broker connection.
     } state;
 
     std::vector<prompt_t> prompts;  ///< PAM messages when state is `challenge`.

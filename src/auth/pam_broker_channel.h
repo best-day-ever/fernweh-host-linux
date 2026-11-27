@@ -144,7 +144,7 @@ namespace plank::auth::broker_channel {
 
   /**
    * @brief Connect only to the fixed root-owned broker; backlog exhaustion fails closed.
-   * @return Owned connected descriptor, or -1. Called only by the supervisor.
+   * @return Owned connected descriptor, or -1. Called by the supervisor's private delegate.
    */
   inline int connect_broker() {
     struct stat metadata {};
@@ -165,6 +165,41 @@ namespace plank::auth::broker_channel {
       return -1;
     }
     return fd;
+  }
+
+  /**
+   * @brief Serve descriptor requests until the private worker connection is lost.
+   * @param channel Supervisor side of the private channel.
+   * @param connect_authorized Opens an owned broker descriptor after checking the active seat.
+   * @return True for ordinary peer closure, false for a broken exchange.
+   */
+  template<class ConnectAuthorized>
+  bool serve_connections(int channel, ConnectAuthorized connect_authorized) {
+    pollfd ready {channel, POLLIN, 0};
+    while (true) {
+      const int status = poll(&ready, 1, -1);
+      if (status < 0 && errno == EINTR) {
+        continue;
+      }
+      if (status < 0 || (ready.revents & (POLLERR | POLLNVAL))) {
+        return false;
+      }
+      if (ready.revents & POLLHUP) {
+        return true;
+      }
+      int unexpected = -1;
+      if (!receive_record(channel, request_byte, false, unexpected)) {
+        return false;
+      }
+      const int broker = connect_authorized();
+      const bool sent = send_connection(channel, broker);
+      if (broker >= 0) {
+        close(broker);
+      }
+      if (!sent) {
+        return false;
+      }
+    }
   }
 
   /**
