@@ -103,7 +103,8 @@ namespace plank::auth {
     }
     descriptor_ = broker_channel::request_connection(context);
     if (descriptor_ < 0) {
-      return protocol_error();
+      explicit_bzero(payload.data(), payload.size());
+      return {step_t::state_e::unavailable, {}, phase_e::protocol, -1};
     }
     transaction_id_ = transaction_id;
     return submit_gssapi(std::move(payload), context);

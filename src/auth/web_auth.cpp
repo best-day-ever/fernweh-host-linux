@@ -147,10 +147,9 @@ namespace plank::auth {
     } catch (...) {
       entry->conversation->cancel();
     }
-    if (step.state != step_t::state_e::authenticated) {
+    if (step.state == step_t::state_e::challenge) {
       // Single round trip: a challenge is never retained for GSSAPI admission.
-      step = {step_t::state_e::denied, {}, step.phase,
-              step.state == step_t::state_e::denied ? step.pam_status : -1};
+      step = {step_t::state_e::denied, {}, step.phase, -1};
     }
     return retain(std::move(step), id, entry);
   }

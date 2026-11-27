@@ -647,14 +647,21 @@ namespace stream {
         session::stop(*session);
         return;
       }
+      using capture_state = platf::x11::cursor_capture_state_e;
+      platf::x11::cursor_capture_result_t capture {capture_state::captured};
       const auto shape_result = shape_retry.update(
         std::chrono::steady_clock::now(),
         shape_status > 0,
-        [&] { return cursor->capture(image); },
+        [&] {
+          capture = cursor->capture(image);
+          return capture.state == capture_state::captured;
+        },
         [&] { return queue_cursor_shape(session, image, queued_serial); }
       );
       if (shape_result == platf::x11::cursor_shape_result_e::first_unavailable) {
-        BOOST_LOG(warning) << "XFixes cursor image temporarily unavailable; retrying"sv;
+        BOOST_LOG(warning) << "XFixes cursor image temporarily unavailable; retrying ("sv
+                           << (capture.state == capture_state::invalid_image ? "invalid image"sv : "no reply"sv)
+                           << ", X11 error "sv << static_cast<unsigned>(capture.protocol_error) << ")"sv;
       } else if (shape_result == platf::x11::cursor_shape_result_e::delivery_failed) {
         session::stop(*session);
         return;

@@ -373,6 +373,9 @@ namespace nvhttp {
       // Advisory UI state, published only after PAM succeeds. Stream launch
       // still independently enforces active-desktop ownership and generation.
       body["desktop_stage"] = plank::session::confirmed_desktop_stage();
+    } else if (step.state == state_e::unavailable) {
+      // Existing brokered clients understand busy as a retryable host failure.
+      body["state"] = "busy";
     } else {
       body["state"] = "denied";
       body["phase"] = static_cast<std::uint16_t>(step.phase);

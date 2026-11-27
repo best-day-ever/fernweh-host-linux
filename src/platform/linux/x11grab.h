@@ -77,6 +77,13 @@ namespace platf::x11 {
    */
   using xdisplay_t = util::safe_ptr<_XDisplay, freeDisplay>;
 
+  enum class cursor_capture_state_e { captured, no_reply, invalid_image };
+
+  struct cursor_capture_result_t {
+    cursor_capture_state_e state;  ///< Outcome of the checked XFixes request.
+    std::uint8_t protocol_error {};  ///< X11 error code, if the server sent one.
+  };
+
   /**
    * @brief X11 cursor image and positioning state used during capture.
    */
@@ -90,11 +97,11 @@ namespace platf::x11 {
     static std::optional<cursor_t> make();
 
     /**
-     * @brief Run the capture loop for this backend.
+     * @brief Read one cursor image from the X server.
      *
-     * @param img Image or frame object to read from or populate.
+     * @param img Destination for the validated cursor image.
      */
-    bool capture(platf::cursor_image_t &img);
+    cursor_capture_result_t capture(platf::cursor_image_t &img);
 
     /**
      * @brief Subscribe this connection to XFixes cursor-shape changes.
