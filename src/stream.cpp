@@ -50,6 +50,7 @@ extern "C" {
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_X11)
   #include "platform/linux/cursor_image.h"
+  #include "platform/linux/cursor_shape_retry.h"
   #include "platform/linux/x11_clipboard.h"
   #include "file_clipboard.h"
   #include "platform/linux/x11grab.h"
@@ -605,6 +606,11 @@ namespace stream {
     return true;
   }
 
+  /**
+   * @brief Track the X11 pointer and retry unavailable cursor images during display transitions.
+   * @param stop_token Request to stop the cursor worker.
+   * @param session Stream receiving cursor shapes and positions.
+   */
   void localCursorThread(std::stop_token stop_token, session_t *session) {
     platf::set_thread_name("sc::cursor");
 
@@ -618,12 +624,7 @@ namespace stream {
 
     platf::cursor_image_t image {};
     unsigned long queued_serial = std::numeric_limits<unsigned long>::max();
-    if (!cursor->capture(image) ||
-        !queue_cursor_shape(session, image, queued_serial)) {
-      BOOST_LOG(error) << "Unable to capture the initial X11 cursor through XFixes"sv;
-      session::stop(*session);
-      return;
-    }
+    platf::x11::cursor_shape_retry_t shape_retry;
 
     BOOST_LOG(info) << "PLANK cursor position uses fixed-deadline XQueryPointer sampling; cursor shape uses XFixes notifications"sv;
     std::uint64_t position_sequence = 0;
@@ -646,10 +647,15 @@ namespace stream {
         session::stop(*session);
         return;
       }
-      if (shape_status > 0 &&
-          (!cursor->capture(image) ||
-           !queue_cursor_shape(session, image, queued_serial))) {
-        BOOST_LOG(error) << "Unable to refresh the active X11 cursor through XFixes"sv;
+      const auto shape_result = shape_retry.update(
+        std::chrono::steady_clock::now(),
+        shape_status > 0,
+        [&] { return cursor->capture(image); },
+        [&] { return queue_cursor_shape(session, image, queued_serial); }
+      );
+      if (shape_result == platf::x11::cursor_shape_result_e::first_unavailable) {
+        BOOST_LOG(warning) << "XFixes cursor image temporarily unavailable; retrying"sv;
+      } else if (shape_result == platf::x11::cursor_shape_result_e::delivery_failed) {
         session::stop(*session);
         return;
       }
